@@ -1,0 +1,8 @@
+apiVersion: v2
+name: 3istor-sessions
+description: Work session planning platform for the 3istor team
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+maintainers:
+  - name: 3-Istor Team

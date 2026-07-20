@@ -1,0 +1,67 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/3-istor/3istor-sessions
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  name: ""
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 8000 # Default Uvicorn port used in your main.py
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Persistence is useful if you rely on the local SQLite database.
+# Disable this if you configure a PostgreSQL DATABASE_URL via Vault secrets.
+persistence:
+  enabled: false
+  storageClass: "local-path"
+  accessMode: ReadWriteOnce
+  size: 2Gi
+  mountPath: /app/data
+
+# Non-sensitive configuration variables.
+env:
+  - name: APP_ENV
+    value: "production"
+  - name: AUTH_MODE
+    value: "google"
+  - name: FRONTEND_URL
+    value: "https://sessions.3istor.com"
+  - name: ALLOWED_HOSTS
+    value: "sessions.3istor.com,127.0.0.1"
+  - name: SESSION_TTL_MINUTES
+    value: "480"
+  - name: MANAGER_EMAIL
+    value: "manager@3istor.com"
+  - name: TEAM_MEMBERS
+    value: "manager@3istor.com,member@3istor.com"
+
+# The name of the Kubernetes Secret (managed by your VaultSecretsOperator)
+# containing sensitive data like APP_SECRET, GOOGLE_CLIENT_ID, etc.
+existingSecret: "3istor-sessions-secrets"

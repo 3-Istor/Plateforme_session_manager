@@ -502,3 +502,30 @@ def mark_notification_read(
         raise HTTPException(status_code=404, detail="Notification introuvable")
     item.read_at = datetime.now(timezone.utc)
     db.commit()
+
+
+# Serve frontend static files in production or when built
+import os
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+dist_path = os.path.join(os.path.dirname(__file__), "../../frontend/dist")
+
+if os.path.exists(dist_path):
+    assets_path = os.path.join(dist_path, "assets")
+    if os.path.exists(assets_path):
+        app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
+
+    logo_path = os.path.join(dist_path, "3istor-logo.png")
+    if os.path.exists(logo_path):
+        @app.get("/3istor-logo.png", include_in_schema=False)
+        def logo():
+            return FileResponse(logo_path)
+
+    @app.get("/{fallback_path:path}", include_in_schema=False)
+    async def fallback(request: Request, fallback_path: str):
+        index_file = os.path.join(dist_path, "index.html")
+        if os.path.exists(index_file):
+            return FileResponse(index_file)
+        raise HTTPException(status_code=404, detail="Not Found")
+
