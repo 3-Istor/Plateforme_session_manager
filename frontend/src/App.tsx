@@ -20,7 +20,7 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import { api, clearGoogleToken, getDemoUser, setDemoUser, setGoogleToken } from "./api";
+import { api, getDemoUser, setDemoUser } from "./api";
 import type { AppConfig, CalendarStatus, Member, SessionRequest, Slot, User } from "./types";
 
 declare global {
@@ -67,7 +67,8 @@ function StatusBadge({ status }: { status: SessionRequest["status"] }) {
   return <span className={`status status-${status}`}><span />{labels[status]}</span>;
 }
 
-function GoogleLogin({ config, onLogin }: { config: AppConfig; onLogin: () => void }) {
+function GoogleLogin({ config, onLogin }: { config: AppConfig; onLogin: () => Promise<void> }) {
+  const [loginError, setLoginError] = useState("");
   useEffect(() => {
     if (!config.google_client_id) return;
     const script = document.createElement("script");
@@ -76,7 +77,15 @@ function GoogleLogin({ config, onLogin }: { config: AppConfig; onLogin: () => vo
     script.onload = () => {
       window.google?.accounts.id.initialize({
         client_id: config.google_client_id!,
-        callback: ({ credential }) => { setGoogleToken(credential); onLogin(); },
+        callback: async ({ credential }) => {
+          setLoginError("");
+          try {
+            await api.googleLogin(credential);
+            await onLogin();
+          } catch (error) {
+            setLoginError((error as Error).message);
+          }
+        },
       });
       const target = document.getElementById("google-signin");
       if (target) window.google?.accounts.id.renderButton(target, { theme: "outline", size: "large", shape: "pill", text: "continue_with" });
@@ -93,6 +102,7 @@ function GoogleLogin({ config, onLogin }: { config: AppConfig; onLogin: () => vo
         <h1>Connexion</h1>
         <p>Plateforme de demande de sessions de l'équipe 3istor.</p>
         <div id="google-signin" className="google-signin" />
+        {loginError && <p className="form-error">{loginError}</p>}
         {!config.google_client_id && <p className="form-error">Ajoutez GOOGLE_CLIENT_ID dans le fichier .env.</p>}
         <div className="login-note"><ShieldCheck size={16} /> Connexion sécurisée avec Google</div>
       </div>
@@ -269,14 +279,16 @@ export default function App() {
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { api.config().then((value) => { setConfig(value); if (value.auth_mode === "demo" || sessionStorage.getItem("google_token")) loadData(); else setLoading(false); }).catch((err) => { setError(err.message); setLoading(false); }); }, [loadData]);
+  useEffect(() => { api.config().then((value) => { setConfig(value); loadData(); }).catch((err) => { setError(err.message); setLoading(false); }); }, [loadData]);
 
   const changeDemoUser = async (email: string) => { setDemoUser(email); setView("dashboard"); await loadData(); };
-  const logout = () => {
-    window.google?.accounts.id.disableAutoSelect();
-    clearGoogleToken();
-    setUser(null);
-    window.location.reload();
+  const logout = async () => {
+    try { await api.logout(); }
+    finally {
+      window.google?.accounts.id.disableAutoSelect();
+      setUser(null);
+      window.location.reload();
+    }
   };
   const connectCalendar = async () => {
     setError("");

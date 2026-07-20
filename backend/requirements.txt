@@ -1,4 +1,4 @@
-fastapi==0.115.6
+fastapi==0.139.2
 uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
 pydantic-settings==2.7.1
@@ -6,7 +6,4 @@ email-validator==2.2.0
 google-auth==2.37.0
 google-auth-oauthlib==1.2.1
 google-api-python-client==2.157.0
-cryptography==44.0.0
-httpx==0.28.1
-anyio==4.7.0
-pytest==8.3.4
+cryptography==49.0.0

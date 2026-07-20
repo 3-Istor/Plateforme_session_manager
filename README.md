@@ -10,7 +10,7 @@ Prérequis : Node 18+ et Python 3.11+.
 cp .env.example .env
 python -m venv .venv
 source .venv/bin/activate
-pip install -r backend/requirements.txt
+pip install -r backend/requirements-dev.txt
 cd frontend && npm install && cd ..
 ```
 
@@ -42,9 +42,11 @@ Cette intégration fonctionne avec des comptes Gmail personnels : aucun Google W
 
 ```env
 APP_ENV=development
-APP_SECRET=dev-secret
+APP_SECRET=replace-with-a-long-random-value
 AUTH_MODE=google
 FRONTEND_URL=http://localhost:5173
+ALLOWED_HOSTS=localhost,127.0.0.1
+SESSION_TTL_MINUTES=480
 
 MANAGER_EMAIL=manager@gmail.com
 TEAM_MEMBERS=manager@gmail.com,membre@gmail.com
@@ -64,15 +66,60 @@ Le calcul des disponibilités appelle exclusivement l'endpoint Google FreeBusy :
 ## Sécurité et production
 
 - Le rôle manager est calculé exclusivement côté serveur à partir de `MANAGER_EMAIL`; le navigateur ne peut pas se promouvoir manager.
-- En production, utilisez `AUTH_MODE=google`, une valeur `APP_SECRET` forte et HTTPS.
-- Le mode démo est refusé si `APP_ENV=production`.
+- Le jeton d'identité Google est échangé une seule fois côté serveur. Il n'est jamais conservé dans `localStorage` ou `sessionStorage`.
+- La session utilise un jeton aléatoire dont seul le hash est stocké en base. En production, le cookie est `HttpOnly`, `Secure`, `SameSite=Lax` et préfixé `__Host-`.
+- Les mutations provenant d'une origine différente de `FRONTEND_URL` sont refusées en production.
+- Les réponses API privées ne sont pas mises en cache et incluent des en-têtes de sécurité. La documentation interactive de l'API est désactivée en production.
+- Le mode démo, HTTP, les secrets faibles et les domaines génériques sont refusés automatiquement si `APP_ENV=production`.
 - Les entrées sont validées côté API, les conflits de créneaux sont revérifiés au moment de l'envoi et de l'acceptation.
 - Pour plusieurs instances, remplacez SQLite par PostgreSQL via `DATABASE_URL`.
 - Les notifications in-app sont toujours créées. L'e-mail au manager est envoyé si les variables SMTP sont configurées.
+
+### Variables minimales de production
+
+Générez `APP_SECRET` une seule fois et conservez-le dans le gestionnaire de secrets du cloud :
+
+```bash
+openssl rand -hex 32
+```
+
+Exemple à adapter à votre domaine :
+
+```env
+APP_ENV=production
+APP_SECRET=valeur-aleatoire-de-64-caracteres
+AUTH_MODE=google
+SESSION_TTL_MINUTES=480
+
+FRONTEND_URL=https://sessions.example.com
+ALLOWED_HOSTS=sessions.example.com
+DATABASE_URL=sqlite:////var/lib/3istor/worksession.db
+
+GOOGLE_CLIENT_ID=xxx.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=xxx
+GOOGLE_REDIRECT_URI=https://sessions.example.com/api/google/calendar/callback
+GOOGLE_TARGET_CALENDAR_ID=identifiant@group.calendar.google.com
+
+MANAGER_EMAIL=manager@gmail.com
+TEAM_MEMBERS=manager@gmail.com,membre@gmail.com
+```
+
+Le frontend et `/api` doivent idéalement être exposés sous le même domaine via un reverse proxy. Celui-ci doit :
+
+- rediriger HTTP vers HTTPS ;
+- transmettre correctement le protocole HTTPS à Uvicorn ;
+- limiter le débit global et la taille des requêtes ;
+- ajouter une politique CSP adaptée à Google Identity Services ;
+- ne jamais exposer `.env`, SQLite, les sauvegardes ou les logs ;
+- chiffrer les sauvegardes et restreindre leur accès.
+
+En production, n'utilisez jamais `--reload`. Limitez `--forwarded-allow-ips` uniquement aux adresses du proxy de confiance. Le compte système exécutant l'application doit être le seul à pouvoir lire les secrets (`chmod 600 .env` si un fichier `.env` est utilisé).
 
 ## Tests
 
 ```bash
 pytest backend/tests
+pip-audit -r backend/requirements.txt
 cd frontend && npm run build
+npm audit
 ```

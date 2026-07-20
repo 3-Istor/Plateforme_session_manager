@@ -12,6 +12,10 @@ class User(BaseModel):
     is_manager: bool = False
 
 
+class GoogleCredentialIn(BaseModel):
+    credential: str = Field(min_length=100, max_length=10000)
+
+
 class Member(BaseModel):
     email: EmailStr
     name: str

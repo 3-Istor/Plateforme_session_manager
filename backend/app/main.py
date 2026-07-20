@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 import logging
+import time
+from collections import defaultdict, deque
 from datetime import datetime, timezone
+from threading import Lock
 from urllib.parse import urlencode
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .auth import current_user, display_name, manager_only
+from .auth import (
+    authenticate_google_credential,
+    create_user_session,
+    current_user,
+    delete_user_session,
+    display_name,
+    manager_only,
+)
 from .config import Settings, get_settings
 from .database import Base, engine, get_db
 from .models import CalendarConnection, Notification, Participant, RequestStatus, SessionRequest
@@ -19,6 +30,7 @@ from .schemas import (
     AuthorizationUrl,
     CalendarStatus,
     DecisionIn,
+    GoogleCredentialIn,
     Member,
     NotificationOut,
     SessionCreate,
@@ -42,16 +54,68 @@ Base.metadata.create_all(bind=engine)
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="3istor Sessions API", version="1.0.0", docs_url="/api/docs")
+app = FastAPI(
+    title="3istor Sessions API",
+    version="1.0.0",
+    docs_url="/api/docs" if settings.app_env != "production" else None,
+    redoc_url=None,
+    openapi_url="/api/openapi.json" if settings.app_env != "production" else None,
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url],
+    allow_origins=[settings.frontend_url.rstrip("/")],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH"],
-    allow_headers=["Authorization", "Content-Type", "X-Demo-User"],
+    allow_headers=["Content-Type", "X-Demo-User"],
+)
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=[*settings.allowed_host_list, *(["testserver"] if settings.app_env != "production" else [])],
 )
 
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > 1_000_000:
+        response = JSONResponse(status_code=413, content={"detail": "Corps de requête trop volumineux"})
+    elif (
+        settings.app_env == "production"
+        and request.url.path.startswith("/api/")
+        and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        and request.headers.get("origin", "").rstrip("/") != settings.frontend_url.rstrip("/")
+    ):
+        response = JSONResponse(status_code=403, content={"detail": "Origine de la requête refusée"})
+    else:
+        response = await call_next(request)
+
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        if settings.app_env == "production":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
 MEMBER_COLORS = ["#4f46e5", "#0ea5e9", "#14b8a6", "#f59e0b", "#ec4899", "#8b5cf6"]
+LOGIN_RATE_LIMIT = 20
+LOGIN_RATE_WINDOW_SECONDS = 60
+login_attempts: dict[str, deque[float]] = defaultdict(deque)
+login_attempts_lock = Lock()
+
+
+def enforce_login_rate_limit(request: Request) -> None:
+    client = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    with login_attempts_lock:
+        attempts = login_attempts[client]
+        while attempts and attempts[0] <= now - LOGIN_RATE_WINDOW_SECONDS:
+            attempts.popleft()
+        if len(attempts) >= LOGIN_RATE_LIMIT:
+            raise HTTPException(status_code=429, detail="Trop de tentatives de connexion. Réessayez dans une minute.")
+        attempts.append(now)
 
 
 def allowed_members(settings: Settings) -> list[str]:
@@ -121,6 +185,48 @@ def public_config(settings: Settings = Depends(get_settings)):
         "calendar_connected": False,
         "working_hours": {"start": "08:00", "end": "21:00"},
     }
+
+
+@app.post("/api/auth/google", response_model=User)
+def google_login(
+    payload: GoogleCredentialIn,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    if settings.auth_mode != "google":
+        raise HTTPException(status_code=404, detail="Connexion Google désactivée")
+    enforce_login_rate_limit(request)
+    user = authenticate_google_credential(payload.credential, settings)
+    token = create_user_session(db, user, settings)
+    response.set_cookie(
+        key=settings.session_cookie_name,
+        value=token,
+        max_age=settings.session_ttl_minutes * 60,
+        secure=settings.app_env == "production",
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return user
+
+
+@app.post("/api/auth/logout", status_code=204)
+def logout(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    delete_user_session(db, request.cookies.get(settings.session_cookie_name))
+    response.delete_cookie(
+        key=settings.session_cookie_name,
+        path="/",
+        secure=settings.app_env == "production",
+        httponly=True,
+        samesite="lax",
+    )
 
 
 @app.get("/api/me", response_model=User)

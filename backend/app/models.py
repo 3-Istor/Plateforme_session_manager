@@ -37,6 +37,18 @@ class RequestStatus(str, enum.Enum):
     declined = "declined"
 
 
+class UserSession(Base):
+    """Server-side login session. Only a SHA-256 hash of the browser token is stored."""
+
+    __tablename__ = "user_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
 class SessionRequest(Base):
     __tablename__ = "session_requests"
 

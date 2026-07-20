@@ -1,17 +1,5 @@
 import type { AppConfig, CalendarStatus, Member, Notification, SessionRequest, Slot, User } from "./types";
 
-let googleToken = sessionStorage.getItem("google_token") || "";
-
-export function setGoogleToken(token: string) {
-  googleToken = token;
-  sessionStorage.setItem("google_token", token);
-}
-
-export function clearGoogleToken() {
-  googleToken = "";
-  sessionStorage.removeItem("google_token");
-}
-
 export function setDemoUser(email: string) {
   localStorage.setItem("demo_user", email);
 }
@@ -23,9 +11,8 @@ export function getDemoUser() {
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   if (options.body) headers.set("Content-Type", "application/json");
-  if (googleToken) headers.set("Authorization", `Bearer ${googleToken}`);
   headers.set("X-Demo-User", getDemoUser());
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetch(path, { ...options, headers, credentials: "include" });
   if (!response.ok) {
     const data = await response.json().catch(() => null);
     throw new Error(data?.detail || "Une erreur inattendue est survenue.");
@@ -36,6 +23,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   config: () => request<AppConfig>("/api/config"),
+  googleLogin: (credential: string) => request<User>("/api/auth/google", {
+    method: "POST",
+    body: JSON.stringify({ credential }),
+  }),
+  logout: () => request<void>("/api/auth/logout", { method: "POST" }),
   me: () => request<User>("/api/me"),
   members: () => request<Member[]>("/api/members"),
   requests: (scope: "mine" | "all") => request<SessionRequest[]>(`/api/requests?scope=${scope}`),
