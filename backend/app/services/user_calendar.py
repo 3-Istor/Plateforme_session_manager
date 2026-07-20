@@ -227,19 +227,27 @@ def freebusy_for_members(
     end_at: datetime,
 ) -> list[tuple[datetime, datetime]]:
     periods: list[tuple[datetime, datetime]] = []
-    for email in emails:
+    availability_calendar_ids = settings.availability_calendar_ids
+    for index, email in enumerate(emails):
         credentials = _credentials(db, settings, email, FREEBUSY_SCOPE)
         service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
+        calendar_ids = ["primary"]
+        if index == 0:
+            calendar_ids.extend(availability_calendar_ids)
         response = service.freebusy().query(
             body={
                 "timeMin": start_at.isoformat(),
                 "timeMax": end_at.isoformat(),
-                "items": [{"id": "primary"}],
+                "items": [{"id": calendar_id} for calendar_id in calendar_ids],
             }
         ).execute()
-        calendar = response.get("calendars", {}).get("primary", {})
-        for busy in calendar.get("busy", []):
-            periods.append((datetime.fromisoformat(busy["start"]), datetime.fromisoformat(busy["end"])))
+        calendars = response.get("calendars", {})
+        for calendar_id in calendar_ids:
+            calendar = calendars.get(calendar_id, {})
+            if calendar.get("errors"):
+                raise ValueError(f"Impossible de lire les disponibilités de l'agenda {calendar_id}")
+            for busy in calendar.get("busy", []):
+                periods.append((datetime.fromisoformat(busy["start"]), datetime.fromisoformat(busy["end"])))
     return periods
 
 

@@ -55,6 +55,7 @@ GOOGLE_CLIENT_ID=xxx.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=xxx
 GOOGLE_REDIRECT_URI=http://localhost:8000/api/google/calendar/callback
 GOOGLE_TARGET_CALENDAR_ID=
+GOOGLE_AVAILABILITY_CALENDAR_IDS=
 ```
 
 Après sa connexion Google, chaque membre clique sur **Connecter mon agenda**. Un membre accorde uniquement le scope `calendar.freebusy`. Le manager accorde ce scope et `calendar.app.created`, qui crée un agenda secondaire **3istor Sessions** et ne donne aucun accès aux détails de son agenda personnel. Les refresh tokens sont chiffrés en base avec une clé dérivée de `APP_SECRET`.
@@ -62,6 +63,8 @@ Après sa connexion Google, chaque membre clique sur **Connecter mon agenda**. U
 Pour utiliser un agenda partagé existant, renseignez son identifiant dans `GOOGLE_TARGET_CALENDAR_ID`. Le manager utilise alors le scope `calendar.events` et doit disposer du droit de modifier les événements de cet agenda. Les autres membres conservent uniquement `calendar.freebusy`. Après ce changement, le manager doit reconnecter son agenda une fois.
 
 Le calcul des disponibilités appelle exclusivement l'endpoint Google FreeBusy : aucun titre, description, participant ou détail d'un événement personnel n'est demandé. Quand le manager accepte, l'API crée un événement unique, ajoute les participants comme invités et utilise `sendUpdates=all`. L'identifiant stable empêche les doublons en cas de nouvelle tentative.
+
+Pour qu'un ou plusieurs agendas collectifs bloquent aussi les créneaux de toute l'équipe, ajoutez leurs identifiants dans `GOOGLE_AVAILABILITY_CALENDAR_IDS`, séparés par des virgules. L'application consulte uniquement leurs périodes libre/occupé avec l'autorisation d'un membre et ne crée, ne modifie ni ne supprime aucun événement dans ces agendas.
 
 ## Sécurité et production
 
@@ -99,6 +102,7 @@ GOOGLE_CLIENT_ID=xxx.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=xxx
 GOOGLE_REDIRECT_URI=https://sessions.example.com/api/google/calendar/callback
 GOOGLE_TARGET_CALENDAR_ID=identifiant@group.calendar.google.com
+GOOGLE_AVAILABILITY_CALENDAR_IDS=agenda-collectif@example.com
 
 MANAGER_EMAIL=manager@gmail.com
 TEAM_MEMBERS=manager@gmail.com,membre@gmail.com

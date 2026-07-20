@@ -1,8 +1,10 @@
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from backend.app.config import Settings
+from backend.app.services import user_calendar
 from backend.app.services.user_calendar import (
     EVENTS_SCOPE,
     FREEBUSY_SCOPE,
@@ -11,6 +13,7 @@ from backend.app.services.user_calendar import (
     create_oauth_state,
     decrypt_refresh_token,
     encrypt_refresh_token,
+    freebusy_for_members,
     required_scopes,
     verify_oauth_state,
 )
@@ -76,3 +79,56 @@ def test_member_authorization_url_never_requests_event_details():
     assert "https://www.googleapis.com/auth/calendar" not in scopes
     assert "https://www.googleapis.com/auth/userinfo.email" in scopes
     assert "include_granted_scopes" not in query
+
+
+def test_collective_calendar_busy_periods_are_checked_once(monkeypatch):
+    shared_settings = settings()
+    shared_settings.google_availability_calendar_ids = (
+        "deleguessigl@gmail.com, second@group.calendar.google.com,deleguessigl@gmail.com"
+    )
+    query_bodies = []
+
+    class FakeRequest:
+        def __init__(self, response):
+            self.response = response
+
+        def execute(self):
+            return self.response
+
+    class FakeService:
+        def freebusy(self):
+            return self
+
+        def query(self, *, body):
+            query_bodies.append(body)
+            calendars = {
+                item["id"]: {
+                    "busy": [
+                        {
+                            "start": "2099-05-12T10:00:00+00:00",
+                            "end": "2099-05-12T11:00:00+00:00",
+                        }
+                    ]
+                }
+                for item in body["items"]
+            }
+            return FakeRequest({"calendars": calendars})
+
+    monkeypatch.setattr(user_calendar, "_credentials", lambda *args: object())
+    monkeypatch.setattr(user_calendar, "build", lambda *args, **kwargs: FakeService())
+
+    periods = freebusy_for_members(
+        None,
+        shared_settings,
+        ["manager@gmail.com", "member@gmail.com"],
+        datetime(2099, 5, 12, tzinfo=timezone.utc),
+        datetime(2099, 5, 13, tzinfo=timezone.utc),
+    )
+
+    assert [item["id"] for item in query_bodies[0]["items"]] == [
+        "primary",
+        "deleguessigl@gmail.com",
+        "second@group.calendar.google.com",
+    ]
+    assert [item["id"] for item in query_bodies[1]["items"]] == ["primary"]
+    assert len(periods) == 4

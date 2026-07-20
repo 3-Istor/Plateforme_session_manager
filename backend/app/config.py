@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     google_client_secret: str = ""
     google_redirect_uri: str = "http://localhost:8000/api/google/calendar/callback"
     google_target_calendar_id: str = ""
+    google_availability_calendar_ids: str = ""
     manager_email: EmailStr = "manager@3istor.fr"
     team_members: str = (
         "manager@3istor.fr,amine@3istor.fr,sarah@3istor.fr,"
@@ -86,6 +87,16 @@ class Settings(BaseSettings):
     @property
     def allowed_host_list(self) -> list[str]:
         return [host.strip().lower() for host in self.allowed_hosts.split(",") if host.strip()]
+
+    @property
+    def availability_calendar_ids(self) -> list[str]:
+        return list(
+            dict.fromkeys(
+                calendar_id.strip()
+                for calendar_id in self.google_availability_calendar_ids.split(",")
+                if calendar_id.strip()
+            )
+        )
 
 
 @lru_cache
