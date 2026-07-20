@@ -1,5 +1,8 @@
 import type { AppConfig, CalendarStatus, Member, Notification, SessionRequest, Slot, User } from "./types";
 
+// Remove the legacy browser token left by versions prior to server-side sessions.
+sessionStorage.removeItem("google_token");
+
 export function setDemoUser(email: string) {
   localStorage.setItem("demo_user", email);
 }
