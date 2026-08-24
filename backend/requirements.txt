@@ -2,7 +2,7 @@ fastapi==0.139.2
 uvicorn[standard]==0.52.4
 sqlalchemy==2.0.36
 pydantic-settings==2.15.0
-email-validator==2.2.0
+email-validator==2.3.0
 google-auth==2.37.0
 google-auth-oauthlib==1.4.0
 google-api-python-client==2.157.0
