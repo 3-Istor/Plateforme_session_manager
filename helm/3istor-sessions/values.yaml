@@ -1,8 +1,9 @@
+# Keep this at 1 while persistence uses the bundled SQLite database.
 replicaCount: 1
 
 image:
   repository: ghcr.io/3-istor/3istor-sessions
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
   tag: "latest"
 
 imagePullSecrets: []
@@ -26,7 +27,10 @@ securityContext:
 
 service:
   type: ClusterIP
-  port: 8000 # Default Uvicorn port used in your main.py
+  port: 8000
+
+# Host header used by Kubernetes probes so TrustedHostMiddleware accepts them.
+probeHost: "sessions.3istor.com"
 
 resources:
   limits:
@@ -39,7 +43,7 @@ resources:
 # Persistence is useful if you rely on the local SQLite database.
 # Disable this if you configure a PostgreSQL DATABASE_URL via Vault secrets.
 persistence:
-  enabled: false
+  enabled: true
   storageClass: "local-path"
   accessMode: ReadWriteOnce
   size: 2Gi
@@ -53,15 +57,17 @@ env:
     value: "google"
   - name: FRONTEND_URL
     value: "https://sessions.3istor.com"
+  - name: GOOGLE_REDIRECT_URI
+    value: "https://sessions.3istor.com/api/google/calendar/callback"
+  - name: GOOGLE_TARGET_CALENDAR_ID
+    value: "913d31d1666fcfd7a8ad0c6447679a0ceafdbff55a20adb5a2dea1f655f39c92@group.calendar.google.com"
   - name: ALLOWED_HOSTS
     value: "sessions.3istor.com,127.0.0.1"
   - name: SESSION_TTL_MINUTES
     value: "480"
-  - name: MANAGER_EMAIL
-    value: "manager@3istor.com"
-  - name: TEAM_MEMBERS
-    value: "manager@3istor.com,member@3istor.com"
 
 # The name of the Kubernetes Secret (managed by your VaultSecretsOperator)
-# containing sensitive data like APP_SECRET, GOOGLE_CLIENT_ID, etc.
+# containing APP_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+# MANAGER_EMAIL and TEAM_MEMBERS. Add DATABASE_URL there only when disabling
+# persistence above in favor of an external PostgreSQL database.
 existingSecret: "3istor-sessions-secrets"

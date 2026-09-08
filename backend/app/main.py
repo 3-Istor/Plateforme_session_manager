@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from threading import Lock
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,13 +25,25 @@ from .auth import (
 )
 from .config import Settings, get_settings
 from .database import Base, engine, get_db
-from .models import CalendarConnection, Notification, Participant, RequestStatus, SessionRequest
+from .models import (
+    CalendarConnection,
+    ForcedBusyParticipant,
+    ForcedSession,
+    LatenessRecord,
+    Notification,
+    Participant,
+    RequestStatus,
+    SessionRequest,
+)
 from .schemas import (
     AvailabilityQuery,
     AuthorizationUrl,
     CalendarStatus,
     DecisionIn,
+    ForcedSlot,
     GoogleCredentialIn,
+    LatenessEntry,
+    LatenessUpdate,
     Member,
     NotificationOut,
     SessionCreate,
@@ -38,7 +51,13 @@ from .schemas import (
     Slot,
     User,
 )
-from .services.availability import compute_slots
+from .services.availability import (
+    BusyPeriods,
+    compute_detailed_slots,
+    compute_slots,
+    periods_overlap,
+    working_window,
+)
 from .services.notifications import send_manager_email
 from .services.user_calendar import (
     authorization_url,
@@ -104,6 +123,10 @@ LOGIN_RATE_LIMIT = 20
 LOGIN_RATE_WINDOW_SECONDS = 60
 login_attempts: dict[str, deque[float]] = defaultdict(deque)
 login_attempts_lock = Lock()
+# This deployment runs one application instance. Serializing availability checks
+# with writes closes the check/insert race within that instance.
+scheduling_lock = Lock()
+lateness_lock = Lock()
 
 
 def enforce_login_rate_limit(request: Request) -> None:
@@ -136,10 +159,18 @@ def google_busy_periods(
     emails: list[str],
     start_at: datetime,
     end_at: datetime,
-) -> list[tuple[datetime, datetime]]:
+) -> BusyPeriods:
     if settings.auth_mode != "google":
-        return []
-    missing = [email for email in emails if not has_required_connection(db, settings, email, False)]
+        return BusyPeriods(by_participant={email: [] for email in emails})
+    required_emails = list(emails)
+    if settings.availability_calendar_ids:
+        required_emails.append(str(settings.manager_email).lower())
+    required_emails = list(dict.fromkeys(required_emails))
+    missing = [
+        email
+        for email in required_emails
+        if not has_required_connection(db, settings, email, False)
+    ]
     if missing:
         raise HTTPException(
             status_code=409,
@@ -156,9 +187,10 @@ def google_busy_periods(
 
 def database_busy_periods(
     db: Session, emails: list[str], start_at: datetime, end_at: datetime, exclude_id: int | None = None
-) -> list[tuple[datetime, datetime]]:
+) -> BusyPeriods:
     statement = (
-        select(SessionRequest)
+        select(Participant.email, SessionRequest.start_at, SessionRequest.end_at)
+        .select_from(SessionRequest)
         .join(Participant)
         .where(
             Participant.email.in_(emails),
@@ -169,7 +201,76 @@ def database_busy_periods(
     )
     if exclude_id:
         statement = statement.where(SessionRequest.id != exclude_id)
-    return [(item.start_at, item.end_at) for item in db.scalars(statement).unique().all()]
+    result = BusyPeriods(by_participant={email: [] for email in emails})
+    for email, busy_start, busy_end in db.execute(statement).all():
+        result.by_participant.setdefault(email, []).append((busy_start, busy_end))
+    return result
+
+
+def combined_busy_periods(
+    db: Session,
+    settings: Settings,
+    emails: list[str],
+    start_at: datetime,
+    end_at: datetime,
+    exclude_id: int | None = None,
+) -> BusyPeriods:
+    return database_busy_periods(db, emails, start_at, end_at, exclude_id).merge(
+        google_busy_periods(db, settings, emails, start_at, end_at)
+    )
+
+
+def has_conflict(busy: BusyPeriods, start_at: datetime, end_at: datetime) -> bool:
+    return any(periods_overlap(start_at, end_at, period) for period in busy.all)
+
+
+def busy_participant_emails(
+    busy: BusyPeriods, start_at: datetime, end_at: datetime
+) -> list[str]:
+    return sorted(
+        email
+        for email, periods in busy.by_participant.items()
+        if any(periods_overlap(start_at, end_at, period) for period in periods)
+    )
+
+
+def collective_calendar_has_conflict(
+    busy: BusyPeriods, start_at: datetime, end_at: datetime
+) -> bool:
+    return any(
+        periods_overlap(start_at, end_at, period) for period in busy.collective
+    )
+
+
+def refresh_forced_conflicts(
+    item: SessionRequest,
+    busy_emails: list[str],
+    collective_busy: bool,
+) -> bool:
+    """Refresh a forced request snapshot and report whether it changed."""
+    if not item.force_record:
+        return False
+    expected = set(busy_emails)
+    current = {participant.email for participant in item.force_record.busy_participants}
+    changed = (
+        current != expected
+        or item.force_record.collective_calendar_busy != collective_busy
+    )
+    if not changed:
+        return False
+    item.force_record.busy_participants[:] = [
+        participant
+        for participant in item.force_record.busy_participants
+        if participant.email in expected
+    ]
+    retained = {
+        participant.email for participant in item.force_record.busy_participants
+    }
+    item.force_record.busy_participants.extend(
+        ForcedBusyParticipant(email=email) for email in sorted(expected - retained)
+    )
+    item.force_record.collective_calendar_busy = collective_busy
+    return True
 
 
 @app.get("/api/health")
@@ -319,13 +420,37 @@ def availability(
     settings: Settings = Depends(get_settings),
 ):
     emails = validate_participants([str(email) for email in query.participant_emails], settings)
-    day_start = datetime.combine(query.day, datetime.min.time(), tzinfo=timezone.utc)
-    day_end = day_start.replace(hour=23, minute=59, second=59)
-    busy = database_busy_periods(db, emails, day_start, day_end)
-    busy.extend(google_busy_periods(db, settings, emails, day_start, day_end))
+    day_start, day_end = working_window(query.day, query.timezone)
+    busy = combined_busy_periods(db, settings, emails, day_start, day_end)
     return [
         Slot(start_at=start_at, end_at=end_at)
         for start_at, end_at in compute_slots(
+            day=query.day,
+            duration_minutes=query.duration_minutes,
+            timezone_name=query.timezone,
+            busy_periods=busy.all,
+        )
+    ]
+
+
+@app.post("/api/availability/force", response_model=list[ForcedSlot])
+def forced_availability(
+    query: AvailabilityQuery,
+    db: Session = Depends(get_db),
+    _: User = Depends(manager_only),
+    settings: Settings = Depends(get_settings),
+):
+    emails = validate_participants([str(email) for email in query.participant_emails], settings)
+    day_start, day_end = working_window(query.day, query.timezone)
+    busy = combined_busy_periods(db, settings, emails, day_start, day_end)
+    return [
+        ForcedSlot(
+            start_at=slot.start_at,
+            end_at=slot.end_at,
+            busy_participant_emails=slot.busy_participant_emails,
+            collective_calendar_busy=slot.collective_calendar_busy,
+        )
+        for slot in compute_detailed_slots(
             day=query.day,
             duration_minutes=query.duration_minutes,
             timezone_name=query.timezone,
@@ -351,7 +476,20 @@ def list_requests(
                 SessionRequest.participants.any(Participant.email == str(user.email)),
             )
         )
-    return db.scalars(statement).unique().all()
+    items = db.scalars(statement).unique().all()
+    if user.is_manager:
+        return items
+    # The forced-slot endpoint and conflict identities are manager-only. Team
+    # members can see that a request was forced without learning who was busy.
+    return [
+        SessionOut.model_validate(item).model_copy(
+            update={
+                "busy_participant_emails": [],
+                "collective_calendar_busy": False,
+            }
+        )
+        for item in items
+    ]
 
 
 @app.post("/api/requests", response_model=SessionOut, status_code=status.HTTP_201_CREATED)
@@ -366,45 +504,56 @@ def create_request(
     requester = str(user.email)
     if requester not in emails:
         emails.append(requester)
-    if payload.start_at.tzinfo is None or payload.end_at.tzinfo is None:
-        raise HTTPException(status_code=422, detail="Le fuseau horaire est obligatoire")
+    if payload.force and not user.is_manager:
+        raise HTTPException(status_code=403, detail="Seul le manager peut forcer un créneau")
     if payload.start_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=422, detail="Le créneau doit être dans le futur")
-    if payload.start_at.hour < 8 or payload.end_at.hour > 21 or (
-        payload.end_at.hour == 21 and payload.end_at.minute > 0
-    ):
-        raise HTTPException(status_code=422, detail="Le créneau doit être compris entre 08:00 et 21:00")
-    busy = database_busy_periods(db, emails, payload.start_at, payload.end_at)
-    busy.extend(google_busy_periods(db, settings, emails, payload.start_at, payload.end_at))
-    if any(payload.start_at < end_at and payload.end_at > start_at for start_at, end_at in busy):
-        raise HTTPException(status_code=409, detail="Ce créneau vient d'être pris. Choisissez-en un autre.")
 
-    item = SessionRequest(
-        requester_email=requester,
-        requester_name=user.name,
-        title=payload.title.strip(),
-        session_type=payload.session_type.strip(),
-        agenda=payload.agenda.strip(),
-        start_at=payload.start_at,
-        end_at=payload.end_at,
-        participants=[Participant(email=email) for email in emails],
-    )
-    db.add(item)
-    db.flush()
-    notification = Notification(
-        recipient_email=str(settings.manager_email).lower(),
-        title="Nouvelle demande de session",
-        message=f"{user.name} demande « {item.title} ». Une validation est nécessaire.",
-        request_id=item.id,
-    )
-    db.add(notification)
-    db.commit()
-    db.refresh(item)
+    email_zone = ZoneInfo(payload.timezone)
+    email_start = payload.start_at.astimezone(email_zone)
+    email_end = payload.end_at.astimezone(email_zone)
+
+    with scheduling_lock:
+        busy = combined_busy_periods(db, settings, emails, payload.start_at, payload.end_at)
+        if not payload.force and has_conflict(busy, payload.start_at, payload.end_at):
+            raise HTTPException(status_code=409, detail="Ce créneau vient d'être pris. Choisissez-en un autre.")
+
+        item = SessionRequest(
+            requester_email=requester,
+            requester_name=user.name,
+            title=payload.title,
+            session_type=payload.session_type,
+            agenda=payload.agenda,
+            start_at=payload.start_at,
+            end_at=payload.end_at,
+            participants=[Participant(email=email) for email in emails],
+        )
+        if payload.force:
+            item.force_record = ForcedSession(
+                collective_calendar_busy=collective_calendar_has_conflict(
+                    busy, payload.start_at, payload.end_at
+                ),
+                busy_participants=[
+                    ForcedBusyParticipant(email=email)
+                    for email in busy_participant_emails(busy, payload.start_at, payload.end_at)
+                ]
+            )
+        db.add(item)
+        db.flush()
+        notification = Notification(
+            recipient_email=str(settings.manager_email).lower(),
+            title="Nouvelle demande de session",
+            message=f"{user.name} demande « {item.title} ». Une validation est nécessaire.",
+            request_id=item.id,
+        )
+        db.add(notification)
+        db.commit()
+        db.refresh(item)
     background_tasks.add_task(
         send_manager_email,
         settings,
         f"[3istor] Nouvelle demande — {item.title}",
-        f"{user.name} a demandé une session du {item.start_at:%d/%m/%Y %H:%M} au {item.end_at:%H:%M}.\n\n{item.agenda}",
+        f"{user.name} a demandé une session du {email_start:%d/%m/%Y %H:%M} au {email_end:%H:%M}.\n\n{item.agenda}",
     )
     return item
 
@@ -417,67 +566,151 @@ def decide_request(
     _: User = Depends(manager_only),
     settings: Settings = Depends(get_settings),
 ):
-    item = db.get(SessionRequest, request_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Demande introuvable")
-    if item.status != RequestStatus.pending:
-        raise HTTPException(status_code=409, detail="Cette demande a déjà été traitée")
-    if payload.status == RequestStatus.approved:
-        manager_email = str(settings.manager_email).lower()
-        if settings.auth_mode == "google" and not has_required_connection(db, settings, manager_email, True):
-            raise HTTPException(
-                status_code=503,
-                detail="Le manager doit connecter son Google Calendar avant de valider une session",
-            )
-        emails = [participant.email for participant in item.participants]
-        busy = database_busy_periods(db, emails, item.start_at, item.end_at, exclude_id=item.id)
-        busy.extend(google_busy_periods(db, settings, emails, item.start_at, item.end_at))
-        if any(item.start_at < end_at and item.end_at > start_at for start_at, end_at in busy):
-            raise HTTPException(status_code=409, detail="Un agenda est désormais occupé sur ce créneau")
-        try:
-            item.calendar_event_id = create_manager_event(
+    with scheduling_lock:
+        item = db.get(SessionRequest, request_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Demande introuvable")
+        if item.status != RequestStatus.pending:
+            raise HTTPException(status_code=409, detail="Cette demande a déjà été traitée")
+        if payload.status == RequestStatus.approved:
+            manager_email = str(settings.manager_email).lower()
+            if settings.auth_mode == "google" and not has_required_connection(db, settings, manager_email, True):
+                raise HTTPException(
+                    status_code=503,
+                    detail="Le manager doit connecter son Google Calendar avant de valider une session",
+                )
+            emails = [participant.email for participant in item.participants]
+            busy = combined_busy_periods(
                 db,
                 settings,
-                manager_email=manager_email,
-                title=item.title,
-                description=f"{item.session_type}\n\nOrdre du jour :\n{item.agenda}",
-                start_at=item.start_at,
-                end_at=item.end_at,
-                attendees=emails,
-                request_key=f"session-request-{item.id}",
+                emails,
+                item.start_at,
+                item.end_at,
+                exclude_id=item.id,
             )
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail="La création de l'événement Google a échoué") from exc
-    item.status = payload.status
-    item.manager_note = payload.manager_note.strip() if payload.manager_note else None
-    notification_recipients = list(
-        dict.fromkeys([item.requester_email, *(participant.email for participant in item.participants)])
-    )
-    for recipient in notification_recipients:
-        calendar_message = (
-            " et l'invitation Google Calendar a été envoyée"
-            if item.calendar_event_id
-            else " dans le planning de l'équipe"
+            if item.is_forced:
+                latest_busy_emails = busy_participant_emails(
+                    busy, item.start_at, item.end_at
+                )
+                latest_collective_busy = collective_calendar_has_conflict(
+                    busy, item.start_at, item.end_at
+                )
+                if refresh_forced_conflicts(
+                    item, latest_busy_emails, latest_collective_busy
+                ):
+                    db.commit()
+                    db.refresh(item)
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Les indisponibilités de ce créneau forcé ont changé. "
+                            "Relisez les conflits actualisés puis confirmez à nouveau."
+                        ),
+                    )
+            else:
+                if has_conflict(busy, item.start_at, item.end_at):
+                    raise HTTPException(status_code=409, detail="Un agenda est désormais occupé sur ce créneau")
+            if settings.auth_mode == "google":
+                try:
+                    item.calendar_event_id = create_manager_event(
+                        db,
+                        settings,
+                        manager_email=manager_email,
+                        title=item.title,
+                        description=f"{item.session_type}\n\nOrdre du jour :\n{item.agenda}",
+                        start_at=item.start_at,
+                        end_at=item.end_at,
+                        attendees=emails,
+                        request_key=f"session-request-{item.id}",
+                    )
+                except Exception as exc:
+                    raise HTTPException(status_code=502, detail="La création de l'événement Google a échoué") from exc
+        item.status = payload.status
+        item.manager_note = payload.manager_note
+        notification_recipients = list(
+            dict.fromkeys([item.requester_email, *(participant.email for participant in item.participants)])
         )
-        db.add(
-            Notification(
-                recipient_email=recipient,
-                title=(
-                    "Session ajoutée au calendrier"
-                    if item.status == RequestStatus.approved
-                    else "Demande refusée"
-                ),
-                message=(
-                    f"La session « {item.title} » a été validée{calendar_message}."
-                    if item.status == RequestStatus.approved
-                    else f"La demande « {item.title} » a été refusée."
-                ),
-                request_id=item.id,
+        for recipient in notification_recipients:
+            calendar_message = (
+                " et l'invitation Google Calendar a été envoyée"
+                if item.calendar_event_id
+                else " dans le planning de l'équipe"
             )
-        )
-    db.commit()
-    db.refresh(item)
+            db.add(
+                Notification(
+                    recipient_email=recipient,
+                    title=(
+                        "Session ajoutée au calendrier"
+                        if item.status == RequestStatus.approved
+                        else "Demande refusée"
+                    ),
+                    message=(
+                        f"La session « {item.title} » a été validée{calendar_message}."
+                        if item.status == RequestStatus.approved
+                        else f"La demande « {item.title} » a été refusée."
+                    ),
+                    request_id=item.id,
+                )
+            )
+        db.commit()
+        db.refresh(item)
     return item
+
+
+def lateness_ranking(db: Session, settings: Settings) -> list[LatenessEntry]:
+    records = {
+        record.email: record
+        for record in db.scalars(
+            select(LatenessRecord).where(LatenessRecord.email.in_(allowed_members(settings)))
+        ).all()
+    }
+    entries = [
+        LatenessEntry(
+            email=email,
+            name=display_name(email),
+            points=records[email].points if email in records else 0,
+            updated_at=records[email].updated_at if email in records else None,
+        )
+        for email in allowed_members(settings)
+    ]
+    return sorted(entries, key=lambda entry: (-entry.points, entry.name.casefold(), str(entry.email)))
+
+
+@app.get("/api/lateness", response_model=list[LatenessEntry])
+def list_lateness(
+    db: Session = Depends(get_db),
+    _: User = Depends(current_user),
+    settings: Settings = Depends(get_settings),
+):
+    return lateness_ranking(db, settings)
+
+
+@app.patch("/api/lateness/{email}", response_model=LatenessEntry)
+def update_lateness(
+    email: str,
+    payload: LatenessUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(manager_only),
+    settings: Settings = Depends(get_settings),
+):
+    normalized = email.strip().lower()
+    if normalized not in allowed_members(settings):
+        raise HTTPException(status_code=404, detail="Membre introuvable")
+    with lateness_lock:
+        record = db.get(LatenessRecord, normalized)
+        if record is None:
+            record = LatenessRecord(email=normalized, points=payload.points)
+            db.add(record)
+        else:
+            record.points = payload.points
+        db.commit()
+        db.refresh(record)
+    return LatenessEntry(
+        email=record.email,
+        name=display_name(record.email),
+        points=record.points,
+        updated_at=record.updated_at,
+    )
 
 
 @app.get("/api/notifications", response_model=list[NotificationOut])
@@ -524,8 +757,9 @@ if os.path.exists(dist_path):
 
     @app.get("/{fallback_path:path}", include_in_schema=False)
     async def fallback(request: Request, fallback_path: str):
+        if fallback_path == "api" or fallback_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
         index_file = os.path.join(dist_path, "index.html")
         if os.path.exists(index_file):
             return FileResponse(index_file)
         raise HTTPException(status_code=404, detail="Not Found")
-

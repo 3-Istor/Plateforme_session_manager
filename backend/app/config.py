@@ -4,6 +4,11 @@ from pathlib import Path
 from pydantic import EmailStr, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DEFAULT_TEAM_MEMBERS = (
+    "manager@3istor.fr,amine@3istor.fr,sarah@3istor.fr,"
+    "lina@3istor.fr,yacine@3istor.fr,nora@3istor.fr"
+)
+
 
 class Settings(BaseSettings):
     app_env: str = "development"
@@ -17,13 +22,12 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = "http://localhost:8000/api/google/calendar/callback"
+    # Required in Google production mode. The application never creates an
+    # implicit calendar when this value is missing.
     google_target_calendar_id: str = ""
     google_availability_calendar_ids: str = ""
     manager_email: EmailStr = "manager@3istor.fr"
-    team_members: str = (
-        "manager@3istor.fr,amine@3istor.fr,sarah@3istor.fr,"
-        "lina@3istor.fr,yacine@3istor.fr,nora@3istor.fr"
-    )
+    team_members: str = DEFAULT_TEAM_MEMBERS
 
     smtp_host: str = ""
     smtp_port: int = 587
@@ -60,7 +64,8 @@ class Settings(BaseSettings):
         errors = []
         if self.auth_mode != "google":
             errors.append("AUTH_MODE=google est obligatoire")
-        if len(self.app_secret) < 32 or self.app_secret == "development-only-secret":
+        insecure_secrets = {"development-only-secret", "replace-with-a-long-random-value"}
+        if len(self.app_secret) < 32 or self.app_secret in insecure_secrets:
             errors.append("APP_SECRET doit contenir au moins 32 caractères aléatoires")
         if not self.frontend_url.startswith("https://"):
             errors.append("FRONTEND_URL doit utiliser HTTPS")
@@ -68,6 +73,12 @@ class Settings(BaseSettings):
             errors.append("GOOGLE_REDIRECT_URI doit utiliser HTTPS")
         if not self.google_client_id or not self.google_client_secret:
             errors.append("les identifiants OAuth Google sont obligatoires")
+        if not self.google_target_calendar_id.strip():
+            errors.append("GOOGLE_TARGET_CALENDAR_ID est obligatoire")
+        if str(self.manager_email).lower() == "manager@3istor.fr":
+            errors.append("MANAGER_EMAIL doit être configuré")
+        if self.team_members.strip() == DEFAULT_TEAM_MEMBERS:
+            errors.append("TEAM_MEMBERS doit être configuré")
         if not self.allowed_host_list or "*" in self.allowed_host_list:
             errors.append("ALLOWED_HOSTS doit contenir uniquement les domaines autorisés")
         if errors:
@@ -90,10 +101,11 @@ class Settings(BaseSettings):
 
     @property
     def availability_calendar_ids(self) -> list[str]:
+        target = self.google_target_calendar_id.strip()
         return list(
             dict.fromkeys(
                 calendar_id.strip()
-                for calendar_id in self.google_availability_calendar_ids.split(",")
+                for calendar_id in [target, *self.google_availability_calendar_ids.split(",")]
                 if calendar_id.strip()
             )
         )

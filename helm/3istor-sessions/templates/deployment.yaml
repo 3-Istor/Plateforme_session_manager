@@ -6,6 +6,11 @@ metadata:
     {{- include "3istor-sessions.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  {{- if .Values.persistence.enabled }}
+  # A single SQLite writer plus Recreate avoids overlapping pods during rollout.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "3istor-sessions.selectorLabels" . | nindent 6 }}
@@ -29,7 +34,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
-              containerPort: {{ .Values.service.port }}
+              containerPort: 8000
               protocol: TCP
           envFrom:
             {{- if .Values.existingSecret }}
@@ -37,6 +42,10 @@ spec:
                 name: {{ .Values.existingSecret }}
             {{- end }}
           env:
+            {{- if .Values.persistence.enabled }}
+            - name: DATABASE_URL
+              value: "sqlite:///{{ .Values.persistence.mountPath }}/worksession.db"
+            {{- end }}
             {{- if .Values.env }}
             {{- toYaml .Values.env | nindent 12 }}
             {{- end }}
@@ -47,6 +56,24 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+              httpHeaders:
+                - name: Host
+                  value: {{ .Values.probeHost | quote }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+              httpHeaders:
+                - name: Host
+                  value: {{ .Values.probeHost | quote }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
       {{- if .Values.persistence.enabled }}
       volumes:
         - name: data

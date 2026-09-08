@@ -54,6 +54,7 @@ def test_production_rejects_weak_or_insecure_configuration():
 
 def test_secure_production_configuration_uses_host_cookie():
     settings = Settings(
+        _env_file=None,
         app_env="production",
         app_secret="a" * 64,
         auth_mode="google",
@@ -61,5 +62,8 @@ def test_secure_production_configuration_uses_host_cookie():
         google_redirect_uri="https://sessions.example.com/api/google/calendar/callback",
         google_client_id="client.apps.googleusercontent.com",
         google_client_secret="secret",
+        google_target_calendar_id="team-calendar@group.calendar.google.com",
+        manager_email="lead@example.com",
+        team_members="lead@example.com,member@example.com",
     )
     assert settings.session_cookie_name == "__Host-3istor_session"

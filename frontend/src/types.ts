@@ -1,6 +1,6 @@
 export type AppConfig = {
   auth_mode: "demo" | "google";
-  google_client_id?: string;
+  google_client_id?: string | null;
   calendar_connected: boolean;
   working_hours: { start: string; end: string };
 };
@@ -8,7 +8,7 @@ export type AppConfig = {
 export type User = {
   email: string;
   name: string;
-  avatar_url?: string;
+  avatar_url?: string | null;
   is_manager: boolean;
 };
 
@@ -19,7 +19,12 @@ export type Member = {
   color: string;
 };
 
-export type Slot = { start_at: string; end_at: string };
+export type Slot = {
+  start_at: string;
+  end_at: string;
+  busy_participant_emails?: string[];
+  collective_calendar_busy?: boolean;
+};
 export type RequestStatus = "pending" | "approved" | "declined";
 
 export type SessionRequest = {
@@ -32,18 +37,28 @@ export type SessionRequest = {
   start_at: string;
   end_at: string;
   status: RequestStatus;
-  manager_note?: string;
+  manager_note?: string | null;
   created_at: string;
   participants: { email: string }[];
+  is_forced: boolean;
+  busy_participant_emails: string[];
+  collective_calendar_busy: boolean;
 };
 
 export type Notification = {
   id: number;
   title: string;
   message: string;
-  request_id?: number;
-  read_at?: string;
+  request_id?: number | null;
+  read_at?: string | null;
   created_at: string;
+};
+
+export type LatenessEntry = {
+  email: string;
+  name: string;
+  points: number;
+  updated_at?: string | null;
 };
 
 export type CalendarStatus = {

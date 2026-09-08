@@ -23,9 +23,16 @@ COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 # Copy backend application
 COPY backend/ /app/backend/
 
+# Writable location for SQLite, including when Kubernetes runs the image as
+# the non-root UID configured by the Helm chart.
+RUN mkdir -p /app/data && chown -R 1000:1000 /app/data
+
 EXPOSE 8000
 
 ENV PYTHONPATH=/app
 ENV APP_ENV=production
+ENV DATABASE_URL=sqlite:////app/data/worksession.db
+
+USER 1000:1000
 
 CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]

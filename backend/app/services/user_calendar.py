@@ -16,15 +16,16 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..models import CalendarConnection, ManagedCalendar
+from .availability import BusyPeriods
 
 FREEBUSY_SCOPE = "https://www.googleapis.com/auth/calendar.freebusy"
-# This scope cannot read the manager's personal calendar. It can only manage
-# the dedicated secondary calendar created by this application.
+# Kept for compatibility with connections made by older releases. New manager
+# connections use SHARED_EVENTS_SCOPE for the configured existing team calendar.
 EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.app.created"
 SHARED_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
@@ -39,10 +40,11 @@ os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 
 def manager_events_scope(settings: Settings) -> str:
-    return SHARED_EVENTS_SCOPE if settings.google_target_calendar_id.strip() else EVENTS_SCOPE
+    # Sessions are always written to the configured, existing team calendar.
+    return SHARED_EVENTS_SCOPE
 
 
-def required_scopes(is_manager: bool, events_scope: str = EVENTS_SCOPE) -> list[str]:
+def required_scopes(is_manager: bool, events_scope: str = SHARED_EVENTS_SCOPE) -> list[str]:
     scopes = [FREEBUSY_SCOPE]
     if is_manager:
         scopes.append(events_scope)
@@ -117,6 +119,8 @@ def verify_oauth_state(settings: Settings, state: str) -> dict:
 def authorization_url(settings: Settings, email: str, is_manager: bool) -> str:
     if not settings.google_client_id or not settings.google_client_secret:
         raise ValueError("GOOGLE_CLIENT_ID et GOOGLE_CLIENT_SECRET sont obligatoires")
+    if is_manager and not settings.google_target_calendar_id.strip():
+        raise ValueError("GOOGLE_TARGET_CALENDAR_ID est obligatoire pour le manager")
     state = create_oauth_state(settings, email, is_manager)
     flow = Flow.from_client_config(_client_config(settings), scopes=authorization_scopes(settings, is_manager), state=state)
     flow.redirect_uri = settings.google_redirect_uri
@@ -161,6 +165,8 @@ def exchange_code(
     authorized_email = str(identity.get("email", "")).lower()
     if not identity.get("email_verified") or authorized_email != email:
         raise ValueError("Connectez l'agenda appartenant au même compte Google")
+    if is_manager:
+        verify_target_calendar_write_access(credentials, settings)
     existing = db.get(CalendarConnection, email)
     refresh_token = credentials.refresh_token
     if not refresh_token and existing:
@@ -172,21 +178,41 @@ def exchange_code(
     connection.scopes = " ".join(sorted(set(granted_scopes)))
     db.add(connection)
     if is_manager:
-        managed_calendar = db.get(ManagedCalendar, email)
         target_calendar_id = settings.google_target_calendar_id.strip()
-        if target_calendar_id:
-            if managed_calendar:
-                managed_calendar.calendar_id = target_calendar_id
-            else:
-                db.add(ManagedCalendar(email=email, calendar_id=target_calendar_id))
-        elif not managed_calendar:
-            service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
-            calendar = service.calendars().insert(
-                body={"summary": "3istor Sessions", "timeZone": "Europe/Paris"}
-            ).execute()
-            db.add(ManagedCalendar(email=email, calendar_id=calendar["id"]))
+        # Keep this legacy table as a verification marker. Removing a stale
+        # marker first also makes a manager change safe despite its historical
+        # unique constraint on calendar_id.
+        db.execute(
+            delete(ManagedCalendar).where(
+                ManagedCalendar.calendar_id == target_calendar_id,
+                ManagedCalendar.email != email,
+            )
+        )
+        verified_target = db.get(ManagedCalendar, email)
+        if verified_target:
+            verified_target.calendar_id = target_calendar_id
+        else:
+            db.add(ManagedCalendar(email=email, calendar_id=target_calendar_id))
     db.commit()
     return email
+
+
+def verify_target_calendar_write_access(credentials: Credentials, settings: Settings) -> None:
+    """Fail OAuth connection unless the manager can edit the exact target."""
+    calendar_id = settings.google_target_calendar_id.strip()
+    if not calendar_id:
+        raise ValueError("GOOGLE_TARGET_CALENDAR_ID est obligatoire pour le manager")
+    service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
+    result = service.events().list(
+        calendarId=calendar_id,
+        maxResults=1,
+        fields="accessRole",
+    ).execute()
+    if result.get("accessRole") not in {"writer", "owner"}:
+        raise ValueError(
+            "Le compte manager doit avoir le droit de modifier les événements "
+            "de l'agenda 3-ISTOR configuré"
+        )
 
 
 def connection_scopes(connection: CalendarConnection | None) -> set[str]:
@@ -196,7 +222,16 @@ def connection_scopes(connection: CalendarConnection | None) -> set[str]:
 def has_required_connection(db: Session, settings: Settings, email: str, is_manager: bool) -> bool:
     scopes = connection_scopes(db.get(CalendarConnection, email.lower()))
     expected = required_scopes(is_manager, manager_events_scope(settings))
-    return set(expected).issubset(scopes)
+    if not set(expected).issubset(scopes):
+        return False
+    if not is_manager:
+        return True
+    verified_target = db.get(ManagedCalendar, email.lower())
+    return bool(
+        verified_target
+        and settings.google_target_calendar_id.strip()
+        and verified_target.calendar_id == settings.google_target_calendar_id.strip()
+    )
 
 
 def connected_emails(db: Session) -> list[str]:
@@ -225,29 +260,52 @@ def freebusy_for_members(
     emails: list[str],
     start_at: datetime,
     end_at: datetime,
-) -> list[tuple[datetime, datetime]]:
-    periods: list[tuple[datetime, datetime]] = []
-    availability_calendar_ids = settings.availability_calendar_ids
-    for index, email in enumerate(emails):
+) -> BusyPeriods:
+    periods = BusyPeriods(by_participant={email.lower(): [] for email in emails})
+    for email in emails:
         credentials = _credentials(db, settings, email, FREEBUSY_SCOPE)
         service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
-        calendar_ids = ["primary"]
-        if index == 0:
-            calendar_ids.extend(availability_calendar_ids)
         response = service.freebusy().query(
             body={
                 "timeMin": start_at.isoformat(),
                 "timeMax": end_at.isoformat(),
-                "items": [{"id": calendar_id} for calendar_id in calendar_ids],
+                "items": [{"id": "primary"}],
             }
         ).execute()
         calendars = response.get("calendars", {})
-        for calendar_id in calendar_ids:
+        primary = calendars.get("primary", {})
+        if primary.get("errors"):
+            raise ValueError(f"Impossible de lire les disponibilités de l'agenda de {email}")
+        for busy in primary.get("busy", []):
+            periods.by_participant[email.lower()].append(
+                (datetime.fromisoformat(busy["start"]), datetime.fromisoformat(busy["end"]))
+            )
+
+    availability_calendar_ids = settings.availability_calendar_ids
+    if availability_calendar_ids:
+        manager_email = str(settings.manager_email).lower()
+        credentials = _credentials(db, settings, manager_email, FREEBUSY_SCOPE)
+        service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
+        response = service.freebusy().query(
+            body={
+                "timeMin": start_at.isoformat(),
+                "timeMax": end_at.isoformat(),
+                "items": [
+                    {"id": calendar_id} for calendar_id in availability_calendar_ids
+                ],
+            }
+        ).execute()
+        calendars = response.get("calendars", {})
+        for calendar_id in availability_calendar_ids:
             calendar = calendars.get(calendar_id, {})
             if calendar.get("errors"):
-                raise ValueError(f"Impossible de lire les disponibilités de l'agenda {calendar_id}")
+                raise ValueError(
+                    f"Impossible de lire les disponibilités de l'agenda {calendar_id}"
+                )
             for busy in calendar.get("busy", []):
-                periods.append((datetime.fromisoformat(busy["start"]), datetime.fromisoformat(busy["end"])))
+                periods.collective.append(
+                    (datetime.fromisoformat(busy["start"]), datetime.fromisoformat(busy["end"]))
+                )
     return periods
 
 
@@ -265,10 +323,9 @@ def create_manager_event(
 ) -> str:
     credentials = _credentials(db, settings, manager_email, manager_events_scope(settings))
     service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
-    managed_calendar = db.get(ManagedCalendar, manager_email.lower())
-    if not managed_calendar:
-        raise ValueError("L'agenda de destination doit être reconnecté")
-    calendar_id = settings.google_target_calendar_id.strip() or managed_calendar.calendar_id
+    calendar_id = settings.google_target_calendar_id.strip()
+    if not calendar_id:
+        raise ValueError("GOOGLE_TARGET_CALENDAR_ID est obligatoire")
     event_id = hashlib.sha256(f"{settings.app_secret}:{request_key}".encode()).hexdigest()[:32]
     unique_attendees = list(
         dict.fromkeys(email.strip().lower() for email in attendees if email.strip().lower() != manager_email.lower())

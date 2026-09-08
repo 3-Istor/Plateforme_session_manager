@@ -69,6 +69,7 @@ def test_large_request_is_rejected_before_parsing():
 
 def test_production_login_cookie_is_secure_and_http_only(monkeypatch):
     settings = Settings(
+        _env_file=None,
         app_env="production",
         app_secret="a" * 64,
         auth_mode="google",
@@ -77,6 +78,9 @@ def test_production_login_cookie_is_secure_and_http_only(monkeypatch):
         google_redirect_uri="https://sessions.example.com/api/google/calendar/callback",
         google_client_id="client.apps.googleusercontent.com",
         google_client_secret="secret",
+        google_target_calendar_id="team-calendar@group.calendar.google.com",
+        manager_email="lead@example.com",
+        team_members="lead@example.com,member@example.com",
     )
     engine = create_engine(
         "sqlite://",
