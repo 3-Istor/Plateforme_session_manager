@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+import base64
+import hashlib
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -83,6 +85,60 @@ def test_member_authorization_url_never_requests_event_details():
     assert "https://www.googleapis.com/auth/calendar" not in scopes
     assert "https://www.googleapis.com/auth/userinfo.email" in scopes
     assert "include_granted_scopes" not in query
+
+
+@pytest.mark.parametrize("manager", [False, True])
+def test_pkce_proof_survives_new_flow_on_callback(monkeypatch, manager):
+    from requests_oauthlib import OAuth2Session
+
+    config = settings()
+    email = "manager@gmail.com" if manager else "member@gmail.com"
+    query = parse_qs(urlparse(authorization_url(config, email, manager)).query)
+    state = query["state"][0]
+    assert query["code_challenge_method"] == ["S256"]
+
+    class TokenExchangeReached(Exception):
+        pass
+
+    def fetch_token(self, token_url, **kwargs):
+        verifier = kwargs["code_verifier"]
+        assert 43 <= len(verifier) <= 128
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+        assert challenge == query["code_challenge"][0]
+        assert verifier not in state
+        assert verifier not in user_calendar._b64decode(state.split(".")[0]).decode()
+        assert kwargs["code"] == "test-authorization-code"
+        raise TokenExchangeReached
+
+    monkeypatch.setattr(OAuth2Session, "fetch_token", fetch_token)
+    # Fresh settings and Flow simulate a different request/process; no DB/network.
+    with pytest.raises(TokenExchangeReached):
+        user_calendar.exchange_code(None, settings(), code="test-authorization-code", state=state)
+
+
+def test_pkce_flows_are_unique_even_at_same_time(monkeypatch):
+    monkeypatch.setattr(user_calendar.time, "time", lambda: 1000)
+    first = parse_qs(urlparse(authorization_url(settings(), "member@gmail.com", False)).query)
+    second = parse_qs(urlparse(authorization_url(settings(), "member@gmail.com", False)).query)
+    assert first["state"] != second["state"]
+    assert first["code_challenge"] != second["code_challenge"]
+
+
+@pytest.mark.parametrize("invalid", ["tampered", "expired"])
+def test_invalid_state_rejected_before_token_exchange(monkeypatch, invalid):
+    monkeypatch.setattr(user_calendar.time, "time", lambda: 1000)
+    state = create_oauth_state(settings(), "member@gmail.com", False)
+    if invalid == "tampered":
+        state += "modified"
+    else:
+        monkeypatch.setattr(user_calendar.time, "time", lambda: 1000 + user_calendar.STATE_TTL_SECONDS + 1)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Invalid state must not reach Google")
+
+    monkeypatch.setattr(user_calendar.Flow, "from_client_config", forbidden)
+    with pytest.raises(ValueError, match="État OAuth"):
+        user_calendar.exchange_code(None, settings(), code="unused", state=state)
 
 
 def test_collective_calendar_busy_periods_are_checked_once(monkeypatch):

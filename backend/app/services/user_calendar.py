@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import time
 from datetime import datetime
 
@@ -94,7 +95,8 @@ def _b64decode(data: str) -> bytes:
 def create_oauth_state(settings: Settings, email: str, is_manager: bool) -> str:
     payload = _b64encode(
         json.dumps(
-            {"email": email.lower(), "manager": is_manager, "exp": int(time.time()) + STATE_TTL_SECONDS},
+            {"email": email.lower(), "manager": is_manager, "exp": int(time.time()) + STATE_TTL_SECONDS,
+             "nonce": secrets.token_urlsafe(32)},
             separators=(",", ":"),
         ).encode()
     )
@@ -116,13 +118,27 @@ def verify_oauth_state(settings: Settings, state: str) -> dict:
         raise ValueError("État OAuth invalide ou expiré") from exc
 
 
+def _pkce_verifier(settings: Settings, state: str) -> str:
+    # Reconstruct the same secret proof on callback without putting it in the
+    # public state or process memory. A random state nonce makes each flow unique.
+    # Domain separation prevents reuse of the state-signature HMAC as a verifier.
+    return _b64encode(hmac.new(
+        settings.app_secret.encode(),
+        b"google-calendar-pkce-v1\x00" + state.encode(),
+        hashlib.sha256,
+    ).digest())
+
+
 def authorization_url(settings: Settings, email: str, is_manager: bool) -> str:
     if not settings.google_client_id or not settings.google_client_secret:
         raise ValueError("GOOGLE_CLIENT_ID et GOOGLE_CLIENT_SECRET sont obligatoires")
     if is_manager and not settings.google_target_calendar_id.strip():
         raise ValueError("GOOGLE_TARGET_CALENDAR_ID est obligatoire pour le manager")
     state = create_oauth_state(settings, email, is_manager)
-    flow = Flow.from_client_config(_client_config(settings), scopes=authorization_scopes(settings, is_manager), state=state)
+    flow = Flow.from_client_config(
+        _client_config(settings), scopes=authorization_scopes(settings, is_manager), state=state,
+        code_verifier=_pkce_verifier(settings, state), autogenerate_code_verifier=False,
+    )
     flow.redirect_uri = settings.google_redirect_uri
     url, _ = flow.authorization_url(
         access_type="offline",
@@ -142,7 +158,10 @@ def exchange_code(
     state_data = verify_oauth_state(settings, state)
     email = str(state_data["email"]).lower()
     is_manager = bool(state_data["manager"])
-    flow = Flow.from_client_config(_client_config(settings), scopes=authorization_scopes(settings, is_manager), state=state)
+    flow = Flow.from_client_config(
+        _client_config(settings), scopes=authorization_scopes(settings, is_manager), state=state,
+        code_verifier=_pkce_verifier(settings, state), autogenerate_code_verifier=False,
+    )
     flow.redirect_uri = settings.google_redirect_uri
     flow.fetch_token(code=code)
     credentials = flow.credentials
