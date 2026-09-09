@@ -8,6 +8,10 @@ DEFAULT_TEAM_MEMBERS = (
     "manager@3istor.fr,amine@3istor.fr,sarah@3istor.fr,"
     "lina@3istor.fr,yacine@3istor.fr,nora@3istor.fr"
 )
+DEFAULT_TARGET_CALENDAR_ID = (
+    "913d31d1666fcfd7a8ad0c6447679a0ceafdbff55a20adb5a2dea1f655f39c92"
+    "@group.calendar.google.com"
+)
 
 
 class Settings(BaseSettings):
@@ -22,9 +26,9 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = "http://localhost:8000/api/google/calendar/callback"
-    # Required in Google production mode. The application never creates an
-    # implicit calendar when this value is missing.
-    google_target_calendar_id: str = ""
+    # Older deployment manifests may omit this variable. Always use the
+    # existing team calendar in that case; never create a new calendar.
+    google_target_calendar_id: str = DEFAULT_TARGET_CALENDAR_ID
     google_availability_calendar_ids: str = ""
     manager_email: EmailStr = "manager@3istor.fr"
     team_members: str = DEFAULT_TEAM_MEMBERS
@@ -48,6 +52,11 @@ class Settings(BaseSettings):
         if value not in {"demo", "google"}:
             raise ValueError("AUTH_MODE must be 'demo' or 'google'")
         return value
+
+    @field_validator("google_target_calendar_id", mode="before")
+    @classmethod
+    def default_target_calendar(cls, value: str | None) -> str:
+        return (value or "").strip() or DEFAULT_TARGET_CALENDAR_ID
 
     @field_validator("app_env")
     @classmethod

@@ -3,7 +3,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from backend.app.auth import current_user, manager_only
-from backend.app.config import Settings
+from backend.app.config import DEFAULT_TARGET_CALENDAR_ID, Settings
 
 
 def test_demo_role_is_derived_from_server_configuration():
@@ -67,3 +67,25 @@ def test_secure_production_configuration_uses_host_cookie():
         team_members="lead@example.com,member@example.com",
     )
     assert settings.session_cookie_name == "__Host-3istor_session"
+
+
+@pytest.mark.parametrize("target", [None, "", "   "])
+def test_production_uses_existing_team_calendar_when_deployment_omits_target(monkeypatch, target):
+    monkeypatch.delenv("GOOGLE_TARGET_CALENDAR_ID", raising=False)
+    if target is not None:
+        monkeypatch.setenv("GOOGLE_TARGET_CALENDAR_ID", target)
+    settings = Settings(
+        _env_file=None,
+        app_env="production",
+        app_secret="a" * 64,
+        auth_mode="google",
+        frontend_url="https://sessions.example.com",
+        allowed_hosts="sessions.example.com",
+        google_redirect_uri="https://sessions.example.com/api/google/calendar/callback",
+        google_client_id="client.apps.googleusercontent.com",
+        google_client_secret="test-secret",
+        manager_email="lead@example.com",
+        team_members="lead@example.com,member@example.com",
+    )
+    assert settings.google_target_calendar_id == DEFAULT_TARGET_CALENDAR_ID
+    assert DEFAULT_TARGET_CALENDAR_ID in settings.availability_calendar_ids
