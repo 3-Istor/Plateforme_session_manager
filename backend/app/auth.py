@@ -11,13 +11,26 @@ from sqlalchemy.orm import Session
 
 from .config import Settings, get_settings
 from .database import get_db
-from .models import UserSession
+from .models import UserSession, UserProfile
 from .schemas import User
 
 
 def display_name(email: str) -> str:
     local = email.split("@", 1)[0].replace(".", " ").replace("-", " ")
     return local.title()
+
+
+def profile_user(db: Session, email: str, name: str, settings: Settings) -> User:
+    profile = db.get(UserProfile, email) if db is not None else None
+    bootstrap = email == str(settings.manager_email).lower()
+    return User(
+        email=email,
+        name=f"{profile.first_name} {profile.last_name}".strip() if profile else name,
+        first_name=profile.first_name if profile else "",
+        last_name=profile.last_name if profile else "",
+        is_manager=bootstrap or bool(profile and profile.manager_status == "approved"),
+        manager_status="approved" if bootstrap else profile.manager_status if profile else "member",
+    )
 
 
 def authenticate_google_credential(credential: str, settings: Settings) -> User:
@@ -86,7 +99,7 @@ def current_user(
         email = (x_demo_user or settings.member_emails[0]).strip().lower()
         if email not in settings.member_emails:
             raise HTTPException(status_code=403, detail="Utilisateur hors de l'équipe")
-        return User(email=email, name=display_name(email), is_manager=email == manager_email)
+        return profile_user(db, email, display_name(email), settings)
 
     token = request.cookies.get(settings.session_cookie_name)
     if not token:
@@ -102,7 +115,7 @@ def current_user(
         db.delete(session)
         db.commit()
         raise HTTPException(status_code=403, detail="Compte non autorisé")
-    return User(email=email, name=session.name, is_manager=email == manager_email)
+    return profile_user(db, email, session.name, settings)
 
 
 def manager_only(user: User = Depends(current_user)) -> User:

@@ -1,6 +1,6 @@
 # 3istor Sessions
 
-Plateforme de planification de sessions de travail pour une petite équipe. Un membre sélectionne les participants et la durée, l'application propose les créneaux où tout le monde est disponible, puis le manager accepte ou refuse la demande. Le manager peut aussi forcer explicitement un créneau en voyant quels membres sont occupés. Une page de points de retard, visible par toute l'équipe et modifiable uniquement par le manager, complète le suivi.
+Plateforme de planification de sessions de travail pour une petite équipe. Un membre sélectionne les participants et la durée, l'application propose les créneaux où tout le monde est disponible, puis le manager accepte ou refuse la demande. Le manager peut aussi forcer explicitement un créneau en voyant quels membres sont occupés. Une page de nombres de retards, visible par toute l'équipe et modifiable uniquement par le manager, complète le suivi.
 
 ## Démarrage local
 
@@ -48,7 +48,7 @@ FRONTEND_URL=http://localhost:5173
 ALLOWED_HOSTS=localhost,127.0.0.1
 SESSION_TTL_MINUTES=480
 
-MANAGER_EMAIL=manager@gmail.com
+MANAGER_EMAIL=joebejjani022@gmail.com
 TEAM_MEMBERS=manager@gmail.com,membre@gmail.com
 
 GOOGLE_CLIENT_ID=xxx.apps.googleusercontent.com
@@ -68,7 +68,7 @@ Pour qu'un ou plusieurs agendas collectifs bloquent aussi les créneaux de toute
 
 ## Sécurité et production
 
-- Le rôle manager est calculé exclusivement côté serveur à partir de `MANAGER_EMAIL`; le navigateur ne peut pas se promouvoir manager.
+- Le manager initial est défini par `MANAGER_EMAIL` (par défaut `joebejjani022@gmail.com`). Les autres membres demandent le rôle depuis **Mon profil** : seul un manager peut accepter ou refuser, et personne ne peut valider sa propre demande. Le serveur relit les droits à chaque requête.
 - Le jeton d'identité Google est échangé une seule fois côté serveur. Il n'est jamais conservé dans `localStorage` ou `sessionStorage`.
 - La session utilise un jeton aléatoire dont seul le hash est stocké en base. En production, le cookie est `HttpOnly`, `Secure`, `SameSite=Lax` et préfixé `__Host-`.
 - Les mutations provenant d'une origine différente de `FRONTEND_URL` sont refusées en production.
@@ -104,7 +104,7 @@ GOOGLE_REDIRECT_URI=https://sessions.example.com/api/google/calendar/callback
 GOOGLE_TARGET_CALENDAR_ID=913d31d1666fcfd7a8ad0c6447679a0ceafdbff55a20adb5a2dea1f655f39c92@group.calendar.google.com
 GOOGLE_AVAILABILITY_CALENDAR_IDS=agenda-collectif@example.com
 
-MANAGER_EMAIL=manager@gmail.com
+MANAGER_EMAIL=joebejjani022@gmail.com
 TEAM_MEMBERS=manager@gmail.com,membre@gmail.com
 ```
 
@@ -112,7 +112,7 @@ TEAM_MEMBERS=manager@gmail.com,membre@gmail.com
 
 Le chart active par défaut un volume persistant monté dans `/app/data`, conserve une seule réplique et utilise une stratégie `Recreate`. Cela protège la base SQLite contre la perte au redémarrage et évite que deux pods écrivent simultanément dans le même fichier. Le Secret nommé par `existingSecret` doit fournir au minimum `APP_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `MANAGER_EMAIL` et `TEAM_MEMBERS`.
 
-Pour utiliser PostgreSQL, désactivez `persistence.enabled`, fournissez `DATABASE_URL` dans ce Secret, puis une stratégie multi-instance et un verrouillage transactionnel adaptés peuvent être mis en place. Ne désactivez pas la persistance en conservant la valeur SQLite embarquée : les sessions, connexions Calendar et points de retard seraient perdus au prochain déploiement.
+Pour utiliser PostgreSQL, désactivez `persistence.enabled`, fournissez `DATABASE_URL` dans ce Secret, puis une stratégie multi-instance et un verrouillage transactionnel adaptés peuvent être mis en place. Ne désactivez pas la persistance en conservant la valeur SQLite embarquée : les sessions, connexions Calendar et nombres de retards seraient perdus au prochain déploiement.
 
 Le frontend et `/api` doivent idéalement être exposés sous le même domaine via un reverse proxy. Celui-ci doit :
 

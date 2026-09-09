@@ -22,6 +22,7 @@ from .auth import (
     delete_user_session,
     display_name,
     manager_only,
+    profile_user,
 )
 from .config import Settings, get_settings
 from .database import Base, engine, get_db
@@ -34,6 +35,7 @@ from .models import (
     Participant,
     RequestStatus,
     SessionRequest,
+    UserProfile,
 )
 from .schemas import (
     AvailabilityQuery,
@@ -50,6 +52,8 @@ from .schemas import (
     SessionOut,
     Slot,
     User,
+    ProfileUpdate,
+    RoleDecision,
 )
 from .services.availability import (
     BusyPeriods,
@@ -335,6 +339,53 @@ def me(user: User = Depends(current_user)):
     return user
 
 
+@app.patch("/api/profile", response_model=User)
+def update_profile(payload: ProfileUpdate, db: Session = Depends(get_db),
+                   user: User = Depends(current_user), settings: Settings = Depends(get_settings)):
+    profile = db.get(UserProfile, str(user.email))
+    if profile is None:
+        profile = UserProfile(email=str(user.email), manager_status="member")
+        db.add(profile)
+    profile.first_name = payload.first_name
+    profile.last_name = payload.last_name
+    if payload.request_manager and not user.is_manager and profile.manager_status != "pending":
+        profile.manager_status = "pending"
+        db.add(Notification(recipient_email=str(settings.manager_email).lower(),
+                            title="Demande de rôle manager",
+                            message=f"{payload.first_name} {payload.last_name} demande le rôle manager."))
+    db.commit()
+    return profile_user(db, str(user.email), user.name, settings)
+
+
+@app.get("/api/profile/role-requests", response_model=list[User])
+def role_requests(db: Session = Depends(get_db), _: User = Depends(manager_only),
+                  settings: Settings = Depends(get_settings)):
+    return [profile_user(db, p.email, display_name(p.email), settings)
+            for p in db.scalars(select(UserProfile).where(
+                UserProfile.manager_status == "pending",
+                UserProfile.email.in_(allowed_members(settings)))).all()]
+
+
+@app.patch("/api/profile/role-requests/{email}", response_model=User)
+def decide_role(email: str, payload: RoleDecision, db: Session = Depends(get_db),
+                manager: User = Depends(manager_only), settings: Settings = Depends(get_settings)):
+    email = email.strip().lower()
+    if email == str(manager.email):
+        raise HTTPException(status_code=403, detail="Vous ne pouvez pas valider votre propre rôle")
+    with scheduling_lock:
+        profile = db.get(UserProfile, email)
+        if profile is None or email not in allowed_members(settings):
+            raise HTTPException(status_code=404, detail="Membre introuvable")
+        if profile.manager_status != "pending":
+            raise HTTPException(status_code=409, detail="Cette demande a déjà été traitée")
+        profile.manager_status = "approved" if payload.approve else "declined"
+        profile.reviewed_by = str(manager.email)
+        db.add(Notification(recipient_email=email, title="Décision sur votre rôle",
+                            message="Votre rôle manager a été validé." if payload.approve else "Votre demande de rôle manager a été refusée."))
+        db.commit()
+    return profile_user(db, email, display_name(email), settings)
+
+
 @app.get("/api/google/calendar/status", response_model=CalendarStatus)
 def calendar_status(
     db: Session = Depends(get_db),
@@ -342,7 +393,7 @@ def calendar_status(
 ):
     return CalendarStatus(
         connected=has_required_connection(db, settings, str(user.email), False),
-        can_create_events=has_required_connection(db, settings, str(user.email), True) if user.is_manager else False,
+        can_create_events=has_required_connection(db, settings, str(settings.manager_email), True) if user.is_manager else False,
         connected_emails=[email for email in connected_emails(db) if email in allowed_members(settings)],
     )
 
@@ -353,7 +404,7 @@ def connect_calendar(
     settings: Settings = Depends(get_settings),
 ):
     try:
-        url = authorization_url(settings, str(user.email), user.is_manager)
+        url = authorization_url(settings, str(user.email), str(user.email) == str(settings.manager_email).lower())
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return AuthorizationUrl(authorization_url=url)
@@ -403,10 +454,10 @@ def disconnect_calendar(
 
 
 @app.get("/api/members", response_model=list[Member])
-def members(_: User = Depends(current_user), settings: Settings = Depends(get_settings)):
+def members(_: User = Depends(current_user), settings: Settings = Depends(get_settings), db: Session = Depends(get_db)):
     result = []
     for index, email in enumerate(allowed_members(settings)):
-        name = display_name(email)
+        name = profile_user(db, email, display_name(email), settings).name
         initials = "".join(part[0] for part in name.split()[:2]).upper()
         result.append(Member(email=email, name=name, initials=initials, color=MEMBER_COLORS[index % len(MEMBER_COLORS)]))
     return result
@@ -667,7 +718,7 @@ def lateness_ranking(db: Session, settings: Settings) -> list[LatenessEntry]:
     entries = [
         LatenessEntry(
             email=email,
-            name=display_name(email),
+            name=profile_user(db, email, display_name(email), settings).name,
             points=records[email].points if email in records else 0,
             updated_at=records[email].updated_at if email in records else None,
         )
@@ -707,7 +758,7 @@ def update_lateness(
         db.refresh(record)
     return LatenessEntry(
         email=record.email,
-        name=display_name(record.email),
+        name=profile_user(db, record.email, display_name(record.email), settings).name,
         points=record.points,
         updated_at=record.updated_at,
     )

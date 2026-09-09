@@ -48,6 +48,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  saveProfile: (first_name: string, last_name: string, request_manager: boolean) => request<User>("/api/profile", { method: "PATCH", body: JSON.stringify({ first_name, last_name, request_manager }) }),
+  roleRequests: () => request<User[]>("/api/profile/role-requests"),
+  decideRole: (email: string, approve: boolean) => request<User>(`/api/profile/role-requests/${encodeURIComponent(email)}`, { method: "PATCH", body: JSON.stringify({ approve }) }),
   config: () => request<AppConfig>("/api/config"),
   googleLogin: (credential: string) => request<User>("/api/auth/google", {
     method: "POST",

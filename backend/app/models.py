@@ -49,6 +49,16 @@ class UserSession(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    email: Mapped[str] = mapped_column(String(320), primary_key=True)
+    first_name: Mapped[str] = mapped_column(String(50), default="")
+    last_name: Mapped[str] = mapped_column(String(50), default="")
+    manager_status: Mapped[str] = mapped_column(String(20), default="member")
+    reviewed_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+
+
 class SessionRequest(Base):
     __tablename__ = "session_requests"
 

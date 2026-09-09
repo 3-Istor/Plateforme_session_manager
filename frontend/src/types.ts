@@ -10,6 +10,9 @@ export type User = {
   name: string;
   avatar_url?: string | null;
   is_manager: boolean;
+  first_name: string;
+  last_name: string;
+  manager_status: string;
 };
 
 export type Member = {

@@ -13,6 +13,20 @@ class User(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     avatar_url: str | None = None
     is_manager: bool = False
+    first_name: str = ""
+    last_name: str = ""
+    manager_status: str = "member"
+
+
+class ProfileUpdate(BaseModel):
+    first_name: str = Field(min_length=1, max_length=50)
+    last_name: str = Field(min_length=1, max_length=50)
+    request_manager: bool = False
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+class RoleDecision(BaseModel):
+    approve: bool
 
 
 class GoogleCredentialIn(BaseModel):

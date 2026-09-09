@@ -26,8 +26,11 @@ from backend.app.schemas import (
     SessionCreate,
     SessionOut,
     User,
+    ProfileUpdate,
+    RoleDecision,
 )
 from backend.app.services.availability import BusyPeriods
+from backend.app.auth import profile_user
 from backend.app.services.user_calendar import (
     FREEBUSY_SCOPE,
     SHARED_EVENTS_SCOPE,
@@ -112,6 +115,40 @@ def test_new_api_routes_are_registered():
     assert "post" in paths["/api/availability/force"]
     assert "get" in paths["/api/lateness"]
     assert "patch" in paths["/api/lateness/{email}"]
+
+
+def test_profile_role_requires_manager_approval(backend_context):
+    db, settings = backend_context
+    saved = main.update_profile(ProfileUpdate(first_name=" Alice ", last_name=" Martin ", request_manager=True), db, user(MEMBER), settings)
+    assert saved.name == "Alice Martin"
+    assert saved.first_name == "Alice"
+    assert saved.manager_status == "pending"
+    assert saved.is_manager is False
+    with pytest.raises(HTTPException):
+        manager_only(saved)
+    with pytest.raises(ValidationError):
+        ProfileUpdate(first_name="Alice", last_name="Martin", is_manager=True)
+    pending = main.role_requests(db, manager_only(user(MANAGER)), settings)
+    assert [str(p.email) for p in pending] == [MEMBER]
+    approved = main.decide_role(MEMBER, RoleDecision(approve=True), db, manager_only(user(MANAGER)), settings)
+    assert approved.is_manager is True
+    db.expire_all()
+    assert profile_user(db, MEMBER, "Old name", settings).name == "Alice Martin"
+    assert manager_only(profile_user(db, MEMBER, "Old name", settings)).is_manager
+    assert next(p for p in main.lateness_ranking(db, settings) if str(p.email) == MEMBER).name == "Alice Martin"
+
+
+def test_role_refusal_and_self_approval(backend_context):
+    db, settings = backend_context
+    pending = main.update_profile(ProfileUpdate(first_name="Bob", last_name="Martin", request_manager=True), db, user(MEMBER), settings)
+    with pytest.raises(HTTPException) as error:
+        main.decide_role(MEMBER, RoleDecision(approve=True), db, pending, settings)
+    assert error.value.status_code == 403
+    rejected = main.decide_role(MEMBER, RoleDecision(approve=False), db, manager_only(user(MANAGER)), settings)
+    assert rejected.is_manager is False
+    assert rejected.manager_status == "declined"
+    with pytest.raises(ValidationError):
+        ProfileUpdate(first_name="  ", last_name="Martin")
 
 
 def test_manager_connection_is_ready_only_for_verified_exact_target(

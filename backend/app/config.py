@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # existing team calendar in that case; never create a new calendar.
     google_target_calendar_id: str = DEFAULT_TARGET_CALENDAR_ID
     google_availability_calendar_ids: str = ""
-    manager_email: EmailStr = "manager@3istor.fr"
+    manager_email: EmailStr = "joebejjani022@gmail.com"
     team_members: str = DEFAULT_TEAM_MEMBERS
 
     smtp_host: str = ""
