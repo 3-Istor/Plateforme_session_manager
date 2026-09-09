@@ -127,6 +127,8 @@ En production, n'utilisez jamais `--reload`. Limitez `--forwarded-allow-ips` uni
 
 ## Tests
 
+Notifications Discord optionnelles : voir [les instructions Vault et Kubernetes](docs/discord-infra.md). Configurer `DISCORD_WEBHOOK_URL` pour publier les demandes et actualiser leur statut dans le même message. Sans cette variable, l’intégration est désactivée.
+
 ```bash
 pytest backend/tests
 pip-audit -r backend/requirements.txt

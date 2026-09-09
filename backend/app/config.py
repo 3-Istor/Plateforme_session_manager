@@ -1,7 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
+import re
 
-from pydantic import EmailStr, Field, field_validator, model_validator
+from pydantic import EmailStr, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_TEAM_MEMBERS = (
@@ -39,11 +40,13 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from: str = ""
     smtp_use_tls: bool = True
+    discord_webhook_url: SecretStr = SecretStr("")
 
     model_config = SettingsConfigDict(
         env_file=Path(__file__).parents[2] / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     @field_validator("auth_mode")
@@ -52,6 +55,14 @@ class Settings(BaseSettings):
         if value not in {"demo", "google"}:
             raise ValueError("AUTH_MODE must be 'demo' or 'google'")
         return value
+
+    @field_validator("discord_webhook_url")
+    @classmethod
+    def valid_discord_webhook(cls, value: SecretStr) -> SecretStr:
+        url = value.get_secret_value().strip().rstrip("/")
+        if url and not re.fullmatch(r"https://discord\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+", url):
+            raise ValueError("DISCORD_WEBHOOK_URL doit être une URL de webhook HTTPS discord.com sans paramètres")
+        return SecretStr(url)
 
     @field_validator("google_target_calendar_id", mode="before")
     @classmethod

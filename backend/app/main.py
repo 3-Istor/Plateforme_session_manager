@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from threading import Lock
+from threading import Event, Lock, Thread
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
@@ -25,7 +26,7 @@ from .auth import (
     profile_user,
 )
 from .config import Settings, get_settings
-from .database import Base, engine, get_db
+from .database import Base, engine, get_db, SessionLocal
 from .models import (
     CalendarConnection,
     ForcedBusyParticipant,
@@ -36,6 +37,7 @@ from .models import (
     RequestStatus,
     SessionRequest,
     UserProfile,
+    DiscordDelivery,
 )
 from .schemas import (
     AvailabilityQuery,
@@ -63,6 +65,7 @@ from .services.availability import (
     working_window,
 )
 from .services.notifications import send_manager_email
+from .services.discord import run_worker
 from .services.user_calendar import (
     authorization_url,
     connected_emails,
@@ -77,7 +80,20 @@ Base.metadata.create_all(bind=engine)
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def lifespan(app):
+    stop = Event()
+    worker = Thread(target=run_worker, args=(stop, SessionLocal, settings), daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        worker.join(timeout=12)
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="3istor Sessions API",
     version="1.0.0",
     docs_url="/api/docs" if settings.app_env != "production" else None,
@@ -591,6 +607,8 @@ def create_request(
             )
         db.add(item)
         db.flush()
+        if settings.discord_webhook_url.get_secret_value():
+            db.add(DiscordDelivery(request_id=item.id))
         notification = Notification(
             recipient_email=str(settings.manager_email).lower(),
             title="Nouvelle demande de session",
@@ -678,6 +696,8 @@ def decide_request(
                     raise HTTPException(status_code=502, detail="La création de l'événement Google a échoué") from exc
         item.status = payload.status
         item.manager_note = payload.manager_note
+        if settings.discord_webhook_url.get_secret_value() and db.get(DiscordDelivery, item.id) is None:
+            db.add(DiscordDelivery(request_id=item.id))
         notification_recipients = list(
             dict.fromkeys([item.requester_email, *(participant.email for participant in item.participants)])
         )

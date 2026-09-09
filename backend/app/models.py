@@ -186,3 +186,14 @@ class LatenessRecord(Base):
     email: Mapped[str] = mapped_column(String(320), primary_key=True)
     points: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+class DiscordDelivery(Base):
+    __tablename__ = "discord_deliveries"
+
+    request_id: Mapped[int] = mapped_column(ForeignKey("session_requests.id"), primary_key=True)
+    message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    webhook_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    delivered_hash: Mapped[str] = mapped_column(String(64), default="")
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+    retry_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
