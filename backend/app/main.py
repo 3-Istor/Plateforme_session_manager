@@ -26,6 +26,7 @@ from .auth import (
     profile_user,
 )
 from .config import Settings, get_settings
+from .metrics import MetricsMiddleware
 from .database import Base, engine, get_db, SessionLocal
 from .models import (
     CalendarConnection,
@@ -137,6 +138,9 @@ async def security_middleware(request: Request, call_next):
         if settings.app_env == "production":
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
+
+# Last added is outermost: only public process metrics bypass host validation.
+app.add_middleware(MetricsMiddleware)
 
 MEMBER_COLORS = ["#4f46e5", "#0ea5e9", "#14b8a6", "#f59e0b", "#ec4899", "#8b5cf6"]
 LOGIN_RATE_LIMIT = 20
