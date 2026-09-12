@@ -10,6 +10,17 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/ID/TOKEN
 
 Remplacer par l’URL réelle d’un webhook de **salon textuel classique**. Les salons forum et fils ne sont pas pris en charge. Pas de bot, token bot ni identifiant de salon supplémentaire nécessaire.
 
+Les URL `https://discordapp.com/api/webhooks/ID/TOKEN` sont également acceptées
+et normalisées vers `https://discord.com` avant tout envoi. Fournir l'URL brute,
+sans guillemets, Markdown, paramètres ni suffixe supplémentaire. Les espaces
+en début/fin et la barre oblique finale sont ignorés.
+
+Une URL invalide désactive uniquement Discord : le site démarre normalement et
+un avertissement `DISCORD_WEBHOOK_URL invalide` apparaît sans exposer la valeur.
+Après correction du Secret, redémarrer l'application. Les nouvelles demandes
+créées pendant la désactivation ne sont pas mises en file Discord ; une décision
+ultérieure après réactivation peut néanmoins créer leur message de statut.
+
 Le contrôleur Vault doit copier cette clé dans le Secret Kubernetes référencé par `existingSecret` du chart (par défaut `3istor-sessions-secrets`). Le Deployment importe déjà les clés avec `envFrom.secretRef`. Ne pas mettre l’URL dans les valeurs Helm versionnées ni dans une variable frontend `VITE_*`.
 
 Conserver `FRONTEND_URL` avec l’URL HTTPS publique du site : elle sert de lien dans les messages. Autoriser les connexions HTTPS sortantes vers `discord.com:443`. Déployer la nouvelle image, synchroniser le Secret, puis redémarrer le Deployment pour charger sa nouvelle variable d’environnement. Un simple changement de Secret ne recharge pas les variables d’un pod existant.

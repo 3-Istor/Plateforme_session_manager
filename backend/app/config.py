@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 import re
+import logging
 
 from pydantic import EmailStr, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -60,9 +61,21 @@ class Settings(BaseSettings):
     @classmethod
     def valid_discord_webhook(cls, value: SecretStr) -> SecretStr:
         url = value.get_secret_value().strip().rstrip("/")
-        if url and not re.fullmatch(r"https://discord\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+", url):
-            raise ValueError("DISCORD_WEBHOOK_URL doit être une URL de webhook HTTPS discord.com sans paramètres")
-        return SecretStr(url)
+        if not url:
+            return SecretStr("")
+        match = re.fullmatch(
+            r"https://(?:discord\.com|discordapp\.com)(/api/webhooks/[0-9]+/[A-Za-z0-9_-]+)", url
+        )
+        if not match:
+            # Discord is optional. Never log the supplied secret or send it to
+            # an untrusted destination, and never prevent the site from starting.
+            logging.getLogger(__name__).warning(
+                "DISCORD_WEBHOOK_URL invalide : notifications Discord désactivées. "
+                "Format attendu : URL HTTPS discord.com ou discordapp.com, "
+                "chemin /api/webhooks/ID/TOKEN, sans paramètres ni guillemets."
+            )
+            return SecretStr("")
+        return SecretStr("https://discord.com" + match.group(1))
 
     @field_validator("google_target_calendar_id", mode="before")
     @classmethod

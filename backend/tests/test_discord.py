@@ -4,7 +4,7 @@ from urllib.error import HTTPError
 
 import pytest
 from fastapi import BackgroundTasks
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 
 from backend.app import main
 from backend.app.config import Settings
@@ -129,5 +129,38 @@ def test_worker_processes_persisted_deliveries(backend_context, monkeypatch):
 
 @pytest.mark.parametrize("url", ["http://discord.com/api/webhooks/123/token", "https://evil.example/api/webhooks/123/token", "https://discord.com.evil.example/api/webhooks/123/token"])
 def test_webhook_only_accepts_discord_https(url):
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, discord_webhook_url=url)
+    assert Settings(_env_file=None, discord_webhook_url=url).discord_webhook_url.get_secret_value() == ""
+
+
+@pytest.mark.parametrize("domain", ["discord.com", "discordapp.com"])
+def test_webhook_normalizes_official_domains(domain):
+    config = Settings(_env_file=None, discord_webhook_url=f" https://{domain}/api/webhooks/123/test_secret-/ \n")
+    assert config.discord_webhook_url.get_secret_value() == "https://discord.com/api/webhooks/123/test_secret-"
+
+
+@pytest.mark.parametrize("url", [
+    "https://discordapp.com.evil.example/api/webhooks/123/private_token",
+    "https://discord.com@evil.example/api/webhooks/123/private_token",
+    "https://discord.com/api/webhooks/123/private_token?wait=true",
+    '"https://discord.com/api/webhooks/123/private_token"',
+    "https://discord.com/api/webhooks/not-a-number/private_token",
+    "https://discord.com/api/webhooks/123/private_token/slack",
+])
+def test_invalid_webhook_disables_only_discord_without_leaking_secret(url, caplog):
+    config = Settings(_env_file=None, discord_webhook_url=url)
+    assert config.discord_webhook_url.get_secret_value() == ""
+    assert "notifications Discord désactivées" in caplog.text
+    assert "private_token" not in caplog.text
+    assert url not in caplog.text
+
+
+def test_legacy_domain_is_sent_to_canonical_discord(backend_context, monkeypatch):
+    db, settings = backend_context
+    item, delivery = create(db, settings)
+    settings.discord_webhook_url = Settings(
+        _env_file=None, discord_webhook_url=WEBHOOK.replace("discord.com", "discordapp.com")
+    ).discord_webhook_url
+    calls = []
+    monkeypatch.setattr(discord, "discord_request", lambda url, method, payload: calls.append(url) or {"id": "444"})
+    discord.sync_delivery(db, delivery, settings)
+    assert calls == [WEBHOOK + "?wait=true"]
