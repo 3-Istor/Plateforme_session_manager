@@ -14,6 +14,7 @@ DEFAULT_TARGET_CALENDAR_ID = (
     "913d31d1666fcfd7a8ad0c6447679a0ceafdbff55a20adb5a2dea1f655f39c92"
     "@group.calendar.google.com"
 )
+REQUIRED_AVAILABILITY_CALENDAR_ID = "deleguessigl@gmail.com"
 
 
 class Settings(BaseSettings):
@@ -138,7 +139,7 @@ class Settings(BaseSettings):
         return list(
             dict.fromkeys(
                 calendar_id.strip()
-                for calendar_id in [target, *self.google_availability_calendar_ids.split(",")]
+                for calendar_id in [target, REQUIRED_AVAILABILITY_CALENDAR_ID, *self.google_availability_calendar_ids.split(",")]
                 if calendar_id.strip()
             )
         )

@@ -208,6 +208,65 @@ def test_collective_calendar_busy_periods_are_checked_once(monkeypatch):
     assert len(periods.collective) == 3
 
 
+@pytest.mark.parametrize("extra", ["", "other@example.com", "deleguessigl@gmail.com"])
+def test_delegates_calendar_always_checked_even_with_empty_override(extra):
+    config = settings()
+    config.google_availability_calendar_ids = extra
+    assert config.availability_calendar_ids.count("deleguessigl@gmail.com") == 1
+    assert config.google_target_calendar_id in config.availability_calendar_ids
+
+
+@pytest.mark.parametrize("failure", [None, "missing_member", "missing_collective", "missing_busy", "denied"])
+def test_every_selected_member_and_delegates_are_checked_fail_closed(monkeypatch, failure):
+    from datetime import date
+    from backend.app.services.availability import compute_detailed_slots
+
+    config = settings()
+    config.google_availability_calendar_ids = ""
+    queried = []
+    class FakeService:
+        def __init__(self, email):
+            self.email = email
+        def freebusy(self):
+            return self
+        def query(self, *, body):
+            queried.append((self.email, [item["id"] for item in body["items"]]))
+            self.calendars = {item["id"]: {"busy": []} for item in body["items"]}
+            if "primary" in self.calendars:
+                if self.email == "member@gmail.com":
+                    self.calendars["primary"]["busy"] = [{"start": "2099-05-12T08:00:00Z", "end": "2099-05-12T09:00:00Z"}]
+                    if failure == "missing_member":
+                        self.calendars = {}
+                    elif failure == "missing_busy":
+                        self.calendars["primary"] = {}
+            else:
+                self.calendars["deleguessigl@gmail.com"]["busy"] = [{"start": "2099-05-12T10:00:00Z", "end": "2099-05-12T11:00:00Z"}]
+                if failure == "missing_collective":
+                    del self.calendars["deleguessigl@gmail.com"]
+                elif failure == "denied":
+                    self.calendars["deleguessigl@gmail.com"] = {"errors": [{"reason": "notFound"}]}
+            return self
+        def execute(self):
+            return {"calendars": self.calendars}
+
+    monkeypatch.setattr(user_calendar, "_credentials", lambda db, config, email, scope: email)
+    monkeypatch.setattr(user_calendar, "build", lambda *args, credentials, **kwargs: FakeService(credentials))
+    def fetch():
+        return freebusy_for_members(None, config, ["manager@gmail.com", "member@gmail.com"], datetime(2099, 5, 12, tzinfo=timezone.utc), datetime(2099, 5, 13, tzinfo=timezone.utc))
+    if failure:
+        with pytest.raises(ValueError, match="Impossible de lire"):
+            fetch()
+    else:
+        periods = fetch()
+        assert queried[:2] == [("manager@gmail.com", ["primary"]), ("member@gmail.com", ["primary"])]
+        slots = compute_detailed_slots(day=date(2099, 5, 12), duration_minutes=60, timezone_name="Europe/Paris", busy_periods=periods)
+        by_hour = {slot.start_at.hour: slot for slot in slots if slot.start_at.minute == 0}
+        assert by_hour[10].busy_participant_emails == ["member@gmail.com"]
+        assert by_hour[12].collective_calendar_busy
+        assert not by_hour[14].busy_participant_emails
+        assert not by_hour[14].collective_calendar_busy
+
+
 def test_event_is_inserted_into_the_exact_configured_calendar(monkeypatch):
     shared_settings = settings()
     shared_settings.google_target_calendar_id = "team-calendar@group.calendar.google.com"

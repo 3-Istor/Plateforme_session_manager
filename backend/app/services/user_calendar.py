@@ -293,7 +293,7 @@ def freebusy_for_members(
         ).execute()
         calendars = response.get("calendars", {})
         primary = calendars.get("primary", {})
-        if primary.get("errors"):
+        if primary.get("errors") or not isinstance(primary.get("busy"), list):
             raise ValueError(f"Impossible de lire les disponibilités de l'agenda de {email}")
         for busy in primary.get("busy", []):
             periods.by_participant[email.lower()].append(
@@ -317,7 +317,7 @@ def freebusy_for_members(
         calendars = response.get("calendars", {})
         for calendar_id in availability_calendar_ids:
             calendar = calendars.get(calendar_id, {})
-            if calendar.get("errors"):
+            if calendar.get("errors") or not isinstance(calendar.get("busy"), list):
                 raise ValueError(
                     f"Impossible de lire les disponibilités de l'agenda {calendar_id}"
                 )
