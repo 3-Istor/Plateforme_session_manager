@@ -5,6 +5,7 @@ import {
   ShieldCheck, Sparkles, Trophy, Users, Video, X, XCircle,
 } from "lucide-react";
 import ProfilePage from "./ProfilePage";
+import EditSession from "./EditSession";
 import { ApiError, SCHEDULE_TIMEZONE, api, getDemoUser, setDemoUser } from "./api";
 import type { AppConfig, CalendarStatus, LatenessEntry, Member, Notification, SessionRequest, Slot, User } from "./types";
 
@@ -67,9 +68,10 @@ function GoogleLogin({ config, onLogin }: { config: AppConfig; onLogin: () => Pr
   </div></div>;
 }
 
-function RequestCard({ item, members, manager, onDecision }: {
+function RequestCard({ item, members, manager, onDecision, onEdit }: {
   item: SessionRequest; members: Member[]; manager: boolean;
   onDecision: (item: SessionRequest, decision: "approved" | "declined") => void;
+  onEdit?: (item: SessionRequest) => void;
 }) {
   const participants = item.participants.map(({ email }) => members.find((member) => member.email === email)).filter(Boolean) as Member[];
   const busyNames = (item.busy_participant_emails || []).map((email) => members.find((member) => member.email === email)?.name || email);
@@ -78,7 +80,10 @@ function RequestCard({ item, members, manager, onDecision }: {
     <div className="request-main"><div className="request-title-row"><div><span className="request-type">{item.session_type}</span><h3>{item.title}</h3></div><div className="request-badges"><StatusBadge status={item.status} />{item.is_forced && <span className="force-badge"><AlertTriangle size={12} /> Créneau forcé</span>}</div></div>
       <div className="request-meta"><span><Clock3 size={15} />{formatTime(item.start_at)}–{formatTime(item.end_at)}</span><span><Users size={15} />{participants.length} participants</span><span>Demandée par {item.requester_name}</span></div>
       {manager && item.is_forced && (busyNames.length > 0 || item.collective_calendar_busy) && <p className="forced-conflicts"><AlertTriangle size={14} /> Conflit{busyNames.length + Number(item.collective_calendar_busy) > 1 ? "s" : ""} au moment du choix : {[busyNames.length ? busyNames.join(", ") : "", item.collective_calendar_busy ? "agenda collectif" : ""].filter(Boolean).join(" · ")}</p>}
+      {item.modifies_request_id && <div className="alert-error"><strong>Modification de la session #{item.modifies_request_id} — {item.status === "pending" ? "à valider" : item.status === "approved" ? "acceptée" : "refusée"}</strong></div>}
+      {item.previous_session && <details><summary>Comparer avec la session précédente</summary><p><strong>Avant :</strong> {item.previous_session.title} · {formatDateTime(item.previous_session.start_at)}–{formatTime(item.previous_session.end_at)}</p><p>{item.previous_session.session_type} · {item.previous_session.agenda}</p><p>Participants : {item.previous_session.participants.map(email => members.find(m => m.email === email)?.name || email).join(", ")}</p><p><strong>Après :</strong> {item.title} · {formatDateTime(item.start_at)}–{formatTime(item.end_at)}</p><p>{item.session_type} · {item.agenda}</p><p>Participants : {participants.map(p => p.name).join(", ")}</p></details>}
       <p className="agenda-preview">{item.agenda}</p><div className="card-footer"><div className="avatar-stack">{participants.slice(0, 5).map((member) => <Avatar key={member.email} member={member} size="sm" />)}</div>
+      {onEdit && !item.modifies_request_id && new Date(item.start_at) > new Date() && <button className="btn btn-ghost" onClick={() => onEdit(item)}>Modifier la session</button>}
       {manager && item.status === "pending" && <div className="decision-actions"><button className="btn btn-ghost danger" onClick={() => onDecision(item, "declined")}><X size={16} /> Refuser</button><button className="btn btn-dark small" onClick={() => onDecision(item, "approved")}><Check size={16} /> Accepter</button></div>}{item.manager_note && <span className="manager-note">Note : {item.manager_note}</span>}</div>
     </div>
   </article>;
@@ -185,11 +190,12 @@ function Dashboard({ user, members, requests, onNew, onViewAll, onDecision }: {
   const [scheduleYear, scheduleMonth] = scheduleDate(now).split("-").map(Number);
   const quarter = Math.floor((scheduleMonth - 1) / 3) + 1;
   const quarterRequests = requests.filter((item) => {
+    if (item.modifies_request_id) return false;
     const [year, month] = scheduleDate(new Date(item.start_at)).split("-").map(Number);
     return year === scheduleYear && Math.floor((month - 1) / 3) + 1 === quarter;
   });
   const pending = requests.filter((item) => item.status === "pending");
-  const upcoming = requests.filter((item) => item.status === "approved" && new Date(item.start_at) >= now);
+  const upcoming = requests.filter((item) => !item.modifies_request_id && item.status === "approved" && new Date(item.start_at) >= now);
   const hours = upcoming.reduce((total, item) => total + (new Date(item.end_at).getTime() - new Date(item.start_at).getTime()) / 3600000, 0);
   const plannedHours = Number.isInteger(hours) ? String(hours) : hours.toFixed(1).replace(".", ",");
   const displayed = user.is_manager ? pending : requests.filter((item) => new Date(item.end_at) >= now).sort((a, b) => +new Date(a.start_at) - +new Date(b.start_at));
@@ -239,6 +245,7 @@ export default function App() {
   const [lateness, setLateness] = useState<LatenessEntry[]>([]);
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
   const [view, setView] = useState<View>("dashboard");
+  const [editing, setEditing] = useState<SessionRequest | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [mobileMenu, setMobileMenu] = useState(false);
@@ -314,7 +321,7 @@ export default function App() {
     };
   }, [user?.email, user?.is_manager]);
 
-  const navigate = (next: View) => { setView(next); setMobileMenu(false); setNotificationsOpen(false); };
+  const navigate = (next: View) => { setEditing(null); setView(next); setMobileMenu(false); setNotificationsOpen(false); };
   const changeDemoUser = async (email: string) => { setDemoUser(email); navigate("dashboard"); await loadData(); };
   const logout = async () => { try { await api.logout(); } finally { window.google?.accounts.id.disableAutoSelect(); setUser(null); window.location.reload(); } };
   const connectCalendar = async () => { setError(""); try { const { authorization_url } = await api.calendarConnect(); window.location.assign(authorization_url); } catch (err) { setError((err as Error).message); } };
@@ -367,10 +374,11 @@ export default function App() {
       {!calendarReady && view !== "lateness" && <div className="calendar-connect-banner"><span className="icon-box"><CalendarDays size={20} /></span><div><strong>Connectez votre Google Calendar</strong><p>{user.is_manager ? "Nous lirons uniquement vos périodes occupées et vous autoriserez la création des sessions validées." : "La plateforme verra uniquement si vous êtes libre ou occupé, jamais le détail de vos événements."}</p></div><button className="btn btn-primary" onClick={() => void connectCalendar()}>Connecter mon agenda</button></div>}
       {view === "dashboard" && <Dashboard user={user} members={members} requests={requests} onNew={() => navigate("new")} onViewAll={() => navigate("requests")} onDecision={openDecision} />}
       {view === "new" && <NewSession members={members} user={user} calendarConnected={calendarReady} connectedEmails={config.auth_mode === "demo" ? [] : calendar?.connected_emails || []} demoMode={config.auth_mode === "demo"} onCreated={addCreatedRequest} onCancel={() => { navigate("dashboard"); void loadData(); }} />}
-      {view === "requests" && <section><div className="page-title"><div><span className="eyebrow">{user.is_manager ? "ESPACE MANAGER" : "MON PLANNING"}</span><h1>{user.is_manager ? "Demandes de l'équipe" : "Mes sessions"}</h1><p>{user.is_manager ? "Validez les sessions et gardez la maîtrise du planning." : "Retrouvez vos demandes et leur état."}</p></div><button className="btn btn-primary" onClick={() => navigate("new")}><Plus size={18} /> Nouvelle session</button></div><div className="request-list">{requests.map((item) => <RequestCard key={item.id} item={item} members={members} manager={user.is_manager} onDecision={openDecision} />)}{!requests.length && <div className="empty-state"><Inbox size={32} /><h3>Aucune session</h3><p>Les demandes apparaîtront ici.</p></div>}</div></section>}
+      {view === "requests" && !editing && <section><div className="page-title"><div><span className="eyebrow">{user.is_manager ? "ESPACE MANAGER" : "MON PLANNING"}</span><h1>{user.is_manager ? "Demandes de l'équipe" : "Mes sessions"}</h1><p>{user.is_manager ? "Validez les sessions et gardez la maîtrise du planning." : "Retrouvez vos demandes et leur état."}</p></div><button className="btn btn-primary" onClick={() => navigate("new")}><Plus size={18} /> Nouvelle session</button></div><div className="request-list">{requests.map((item) => <RequestCard key={item.id} item={item} members={members} manager={user.is_manager} onDecision={openDecision} onEdit={user.is_manager || item.requester_email === user.email ? setEditing : undefined} />)}{!requests.length && <div className="empty-state"><Inbox size={32} /><h3>Aucune session</h3><p>Les demandes apparaîtront ici.</p></div>}</div></section>}
+      {view === "requests" && editing && <EditSession key={editing.id} item={editing} user={user} members={members} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void loadData(); }} />}
       {view === "profile" && <ProfilePage key={user.email} user={user} onSaved={loadData} />}
       {view === "lateness" && <LatenessPage entries={lateness} members={members} manager={user.is_manager} onSave={saveLateness} />}
     </div></main>
-    {decision && <div className="modal-backdrop" onMouseDown={() => !decisionLoading && closeDecision()}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="decision-title" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" aria-label="Fermer" disabled={decisionLoading} onClick={closeDecision}><X /></button><span className={`decision-icon ${decision.value}`}>{decision.value === "approved" ? <CheckCircle2 /> : <XCircle />}</span><h2 id="decision-title">{decision.value === "approved" ? "Accepter cette session ?" : "Refuser cette session ?"}</h2><p>« {decision.item.title} » · {formatDate(decision.item.start_at, true)} à {formatTime(decision.item.start_at)}</p>{decision.item.is_forced && <div className="decision-force-warning"><AlertTriangle size={17} /><span>Cette demande utilise un créneau forcé{decision.item.busy_participant_emails?.length ? ` malgré l'indisponibilité de ${decision.item.busy_participant_emails.map((email) => members.find((member) => member.email === email)?.name || email).join(", ")}` : ""}{decision.item.collective_calendar_busy ? `${decision.item.busy_participant_emails?.length ? "; l" : " malgré l"}'agenda collectif est occupé` : ""}.</span></div>}<label className="field-label" htmlFor="manager-note">Note au demandeur (facultatif)</label><textarea id="manager-note" className="input textarea small-area" disabled={decisionLoading} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ajoutez un commentaire…" /><div className="modal-actions"><button className="btn btn-ghost" disabled={decisionLoading} onClick={closeDecision}>Annuler</button><button className={`btn ${decision.value === "approved" ? "btn-primary" : "btn-danger"}`} disabled={decisionLoading} onClick={() => void handleDecision()}>{decisionLoading && <LoaderCircle className="spin" size={16} />} Confirmer</button></div></div></div>}
+    {decision && <div className="modal-backdrop" onMouseDown={() => !decisionLoading && closeDecision()}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="decision-title" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" aria-label="Fermer" disabled={decisionLoading} onClick={closeDecision}><X /></button><span className={`decision-icon ${decision.value}`}>{decision.value === "approved" ? <CheckCircle2 /> : <XCircle />}</span><h2 id="decision-title">{decision.item.modifies_request_id ? (decision.value === "approved" ? "Accepter cette modification ?" : "Refuser cette modification ?") : (decision.value === "approved" ? "Accepter cette session ?" : "Refuser cette session ?")}</h2><p>« {decision.item.title} » · {formatDate(decision.item.start_at, true)} à {formatTime(decision.item.start_at)}</p>{decision.item.is_forced && <div className="decision-force-warning"><AlertTriangle size={17} /><span>Cette demande utilise un créneau forcé{decision.item.busy_participant_emails?.length ? ` malgré l'indisponibilité de ${decision.item.busy_participant_emails.map((email) => members.find((member) => member.email === email)?.name || email).join(", ")}` : ""}{decision.item.collective_calendar_busy ? `${decision.item.busy_participant_emails?.length ? "; l" : " malgré l"}'agenda collectif est occupé` : ""}.</span></div>}<label className="field-label" htmlFor="manager-note">Note au demandeur (facultatif)</label><textarea id="manager-note" className="input textarea small-area" disabled={decisionLoading} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ajoutez un commentaire…" /><div className="modal-actions"><button className="btn btn-ghost" disabled={decisionLoading} onClick={closeDecision}>Annuler</button><button className={`btn ${decision.value === "approved" ? "btn-primary" : "btn-danger"}`} disabled={decisionLoading} onClick={() => void handleDecision()}>{decisionLoading && <LoaderCircle className="spin" size={16} />} Confirmer</button></div></div></div>}
   </div>;
 }

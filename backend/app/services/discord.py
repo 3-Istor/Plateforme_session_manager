@@ -42,6 +42,15 @@ def message_payload(db, item, settings):
         {"name": "Participants", "value": ", ".join(names)[:1024] or "—"},
         {"name": "Demandée par", "value": item.requester_name[:1024]},
     ]
+    fields.append({"name": "Type de demande", "value": (
+        f"Modification de la session #{item.modifies_request_id}" if item.modifies_request_id
+        else "Demande de session"
+    )})
+    if item.previous_session:
+        previous = item.previous_session
+        old_start = datetime.fromisoformat(previous["start_at"]).astimezone(zone)
+        old_end = datetime.fromisoformat(previous["end_at"]).astimezone(zone)
+        fields.append({"name": "Avant modification", "value": f"{previous['title']}\n{old_start:%d/%m/%Y %H:%M}–{old_end:%H:%M}"[:1024]})
     if item.manager_note:
         fields.append({"name": "Note du manager", "value": item.manager_note[:1024]})
     if item.is_forced:

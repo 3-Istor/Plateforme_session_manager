@@ -146,6 +146,8 @@ class ParticipantOut(BaseModel):
 
 
 class SessionOut(BaseModel):
+    modifies_request_id: int | None = None
+    previous_session: dict | None = None
     id: int
     requester_email: str
     requester_name: str

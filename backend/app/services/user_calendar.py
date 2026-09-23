@@ -328,6 +328,22 @@ def freebusy_for_members(
     return periods
 
 
+def update_manager_event(
+    db: Session, settings: Settings, *, event_id: str, manager_email: str,
+    title: str, description: str, start_at: datetime, end_at: datetime, attendees: list[str],
+) -> str:
+    credentials = _credentials(db, settings, manager_email, manager_events_scope(settings))
+    service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
+    event = service.events().patch(
+        calendarId=settings.google_target_calendar_id, eventId=event_id, sendUpdates="all",
+        body={"summary": title, "description": description,
+              "start": {"dateTime": start_at.isoformat()}, "end": {"dateTime": end_at.isoformat()},
+              "attendees": [{"email": email} for email in dict.fromkeys(attendees) if email != manager_email],
+              "guestsCanInviteOthers": False, "guestsCanModify": False},
+    ).execute()
+    return event["id"]
+
+
 def create_manager_event(
     db: Session,
     settings: Settings,

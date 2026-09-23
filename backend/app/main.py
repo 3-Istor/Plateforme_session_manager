@@ -37,6 +37,7 @@ from .models import (
     Participant,
     RequestStatus,
     SessionRequest,
+    SessionRevision,
     UserProfile,
     DiscordDelivery,
 )
@@ -221,6 +222,7 @@ def database_busy_periods(
             SessionRequest.status.in_([RequestStatus.pending, RequestStatus.approved]),
             SessionRequest.start_at < end_at,
             SessionRequest.end_at > start_at,
+            SessionRequest.id.not_in(select(SessionRevision.request_id)),
         )
     )
     if exclude_id:
@@ -545,6 +547,11 @@ def list_requests(
             or_(
                 SessionRequest.requester_email == str(user.email),
                 SessionRequest.participants.any(Participant.email == str(user.email)),
+                SessionRequest.id.in_(select(SessionRevision.request_id).where(
+                    SessionRevision.original_id.in_(select(SessionRequest.id).where(
+                        SessionRequest.requester_email == str(user.email)
+                    ))
+                )),
             )
         )
     items = db.scalars(statement).unique().all()
@@ -631,6 +638,13 @@ def create_request(
     return item
 
 
+@app.post("/api/requests/{request_id}/modifications", response_model=SessionOut, status_code=201)
+def propose_modification(request_id: int, payload: SessionCreate, db: Session = Depends(get_db),
+                         user: User = Depends(current_user), settings: Settings = Depends(get_settings)):
+    from .services.revisions import propose
+    return propose(db, settings, user, request_id, payload)
+
+
 @app.patch("/api/requests/{request_id}/decision", response_model=SessionOut)
 def decide_request(
     request_id: int,
@@ -639,12 +653,21 @@ def decide_request(
     _: User = Depends(manager_only),
     settings: Settings = Depends(get_settings),
 ):
+    from .services.revisions import decide
+    revision_item = db.get(SessionRequest, request_id)
+    if revision_item and revision_item.revision:
+        return decide(db, settings, request_id, payload)
     with scheduling_lock:
         item = db.get(SessionRequest, request_id)
         if not item:
             raise HTTPException(status_code=404, detail="Demande introuvable")
+        db.refresh(item)
         if item.status != RequestStatus.pending:
             raise HTTPException(status_code=409, detail="Cette demande a déjà été traitée")
+        if db.scalar(select(SessionRevision.request_id).join(
+            SessionRequest, SessionRequest.id == SessionRevision.request_id
+        ).where(SessionRevision.original_id == item.id, SessionRequest.status == RequestStatus.pending)):
+            raise HTTPException(409, "Traitez d'abord la modification en attente de cette session")
         if payload.status == RequestStatus.approved:
             manager_email = str(settings.manager_email).lower()
             if settings.auth_mode == "google" and not has_required_connection(db, settings, manager_email, True):

@@ -31,6 +31,8 @@ export type Slot = {
 export type RequestStatus = "pending" | "approved" | "declined";
 
 export type SessionRequest = {
+  modifies_request_id?: number | null;
+  previous_session?: { title: string; session_type: string; agenda: string; start_at: string; end_at: string; participants: string[] } | null;
   id: number;
   requester_email: string;
   requester_name: string;

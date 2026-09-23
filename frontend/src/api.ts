@@ -108,6 +108,8 @@ export const api = {
     force: boolean;
     timezone: string;
   }) => request<SessionRequest>("/api/requests", { method: "POST", body: JSON.stringify(payload) }),
+  modifyRequest: (id: number, payload: { title: string; project_name: string; no_project: boolean; session_type: string; agenda: string; start_at: string; end_at: string; participant_emails: string[]; force: boolean; timezone: string }) =>
+    request<SessionRequest>(`/api/requests/${id}/modifications`, { method: "POST", body: JSON.stringify(payload) }),
   decide: (id: number, status: "approved" | "declined", manager_note?: string) =>
     request<SessionRequest>(`/api/requests/${id}/decision`, {
       method: "PATCH",

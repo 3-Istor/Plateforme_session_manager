@@ -1,4 +1,5 @@
 import enum
+import json
 from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
@@ -79,6 +80,18 @@ class SessionRequest(Base):
     participants: Mapped[list["Participant"]] = relationship(
         back_populates="request", cascade="all, delete-orphan", lazy="selectin"
     )
+    revision: Mapped["SessionRevision | None"] = relationship(
+        foreign_keys="SessionRevision.request_id", lazy="selectin", uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+    @property
+    def modifies_request_id(self) -> int | None:
+        return self.revision.original_id if self.revision else None
+
+    @property
+    def previous_session(self) -> dict | None:
+        return json.loads(self.revision.snapshot) if self.revision else None
     force_record: Mapped["ForcedSession | None"] = relationship(
         back_populates="request",
         cascade="all, delete-orphan",
@@ -99,6 +112,13 @@ class SessionRequest(Base):
     @property
     def collective_calendar_busy(self) -> bool:
         return bool(self.force_record and self.force_record.collective_calendar_busy)
+
+
+class SessionRevision(Base):
+    __tablename__ = "session_revisions"
+    request_id: Mapped[int] = mapped_column(ForeignKey("session_requests.id"), primary_key=True)
+    original_id: Mapped[int] = mapped_column(ForeignKey("session_requests.id"), index=True)
+    snapshot: Mapped[str] = mapped_column(Text)
 
 
 class Participant(Base):
