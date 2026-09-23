@@ -592,7 +592,7 @@ def create_request(
         item = SessionRequest(
             requester_email=requester,
             requester_name=user.name,
-            title=payload.title,
+            title=payload.formatted_title,
             session_type=payload.session_type,
             agenda=payload.agenda,
             start_at=payload.start_at,

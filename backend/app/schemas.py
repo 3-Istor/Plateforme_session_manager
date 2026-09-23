@@ -71,6 +71,8 @@ class ForcedSlot(Slot):
 
 class SessionCreate(BaseModel):
     title: str = Field(min_length=3, max_length=160)
+    project_name: str = Field(default="", max_length=80)
+    no_project: bool = False
     session_type: str = Field(min_length=2, max_length=60)
     agenda: str = Field(min_length=10, max_length=4000)
     start_at: datetime
@@ -79,10 +81,26 @@ class SessionCreate(BaseModel):
     force: bool = False
     timezone: str = "Europe/Paris"
 
-    @field_validator("title", "session_type", "agenda", mode="before")
+    @field_validator("title", "project_name", "session_type", "agenda", mode="before")
     @classmethod
     def trim_text(cls, value):
         return value.strip() if isinstance(value, str) else value
+
+    @property
+    def formatted_title(self) -> str:
+        return self.title if self.no_project else f"[{self.project_name}] {self.title}"
+
+    @model_validator(mode="after")
+    def validate_project(self):
+        if not self.no_project and not self.project_name:
+            raise ValueError("Indiquez le nom du projet ou cochez la case sans projet précis")
+        if self.no_project and self.project_name:
+            raise ValueError("Une session sans projet ne doit pas avoir de nom de projet")
+        if any(char in self.project_name for char in "[]\r\n"):
+            raise ValueError("Le nom du projet ne doit pas contenir de crochets ni de retour à la ligne")
+        if len(self.formatted_title) > 160:
+            raise ValueError("Le nom du projet et le titre, crochets inclus, ne doivent pas dépasser 160 caractères")
+        return self
 
     @field_validator("timezone")
     @classmethod

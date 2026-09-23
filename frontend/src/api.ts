@@ -98,6 +98,8 @@ export const api = {
     }),
   createRequest: (payload: {
     title: string;
+    project_name: string;
+    no_project: boolean;
     session_type: string;
     agenda: string;
     start_at: string;

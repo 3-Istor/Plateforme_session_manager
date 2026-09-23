@@ -100,6 +100,7 @@ def add_busy_request(
 def request_payload(start_hour: int, end_hour: int, *, force: bool = False) -> dict:
     return {
         "title": "  Nouvelle session  ",
+        "no_project": True,
         "session_type": "  Travail  ",
         "agenda": "  Un ordre du jour suffisamment précis.  ",
         "start_at": datetime(2099, 5, 12, start_hour, tzinfo=PARIS),
@@ -115,6 +116,36 @@ def test_new_api_routes_are_registered():
     assert "post" in paths["/api/availability/force"]
     assert "get" in paths["/api/lateness"]
     assert "patch" in paths["/api/lateness/{email}"]
+
+
+@pytest.mark.parametrize("project,no_project,expected", [
+    ("  SIGL  ", False, "[SIGL] Nouvelle session"),
+    ("", True, "Nouvelle session"),
+])
+def test_project_title_is_persisted(backend_context, project, no_project, expected):
+    db, settings = backend_context
+    payload = SessionCreate(**{**request_payload(12, 13), "project_name": project, "no_project": no_project})
+    created = main.create_request(payload, BackgroundTasks(), db, user(MEMBER), settings)
+    assert created.title == expected
+    assert db.get(SessionRequest, created.id).title == expected
+
+
+@pytest.mark.parametrize("fields", [
+    {}, {"project_name": "   "}, {"project_name": "[SIGL]"},
+    {"project_name": "SIGL\nAutre"},
+    {"project_name": "SIGL", "no_project": True},
+    {"project_name": "A" * 80, "title": "B" * 80},
+])
+def test_project_required_and_title_constraints(fields):
+    payload = request_payload(12, 13)
+    payload.pop("no_project")
+    with pytest.raises(ValidationError):
+        SessionCreate(**{**payload, **fields})
+
+
+def test_project_title_exact_database_limit():
+    payload = SessionCreate(**{**request_payload(12, 13), "project_name": "A" * 80, "no_project": False, "title": "B" * 77})
+    assert len(payload.formatted_title) == 160
 
 
 def test_profile_role_requires_manager_approval(backend_context):
