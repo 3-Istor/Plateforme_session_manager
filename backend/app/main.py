@@ -842,6 +842,12 @@ from fastapi.responses import FileResponse
 
 dist_path = os.path.join(os.path.dirname(__file__), "../../frontend/dist")
 
+
+@app.get("/api/version")
+async def deployed_frontend_version():
+    from .frontend_version import frontend_version
+    return frontend_version(dist_path)
+
 if os.path.exists(dist_path):
     assets_path = os.path.join(dist_path, "assets")
     if os.path.exists(assets_path):
@@ -859,5 +865,6 @@ if os.path.exists(dist_path):
             raise HTTPException(status_code=404, detail="Not Found")
         index_file = os.path.join(dist_path, "index.html")
         if os.path.exists(index_file):
-            return FileResponse(index_file)
+            from .frontend_version import frontend_index_response
+            return frontend_index_response(index_file)
         raise HTTPException(status_code=404, detail="Not Found")
