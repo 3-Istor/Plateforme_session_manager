@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "./api";
+import DurationPicker, { validDuration } from "./DurationPicker";
 import type { Member, SessionRequest, User } from "./types";
 
 function parisLocal(iso: string) {
@@ -29,12 +30,23 @@ export default function EditSession({ item, user, members, onClose, onSaved }: {
   const [agenda, setAgenda] = useState(item.agenda);
   const [start, setStart] = useState(parisLocal(item.start_at));
   const [end, setEnd] = useState(parisLocal(item.end_at));
+  const [duration, setDuration] = useState((Date.parse(item.end_at) - Date.parse(item.start_at)) / 60000);
   const [emails, setEmails] = useState(item.participants.map(p => p.email));
   const [force, setForce] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  function periodDuration(nextStart: string, nextEnd: string) {
+    return nextStart && nextEnd ? (Date.parse(parisISO(nextEnd)) - Date.parse(parisISO(nextStart))) / 60000 : NaN;
+  }
+  function changeDuration(minutes: number) {
+    setDuration(minutes);
+    if (validDuration(minutes) && start) {
+      setEnd(parisLocal(new Date(Date.parse(parisISO(start)) + minutes * 60000).toISOString()));
+    }
+  }
   async function save(event: React.FormEvent) {
     event.preventDefault(); setSaving(true); setError("");
+    if (!validDuration(duration)) { setSaving(false); setError("La durée doit être comprise entre 15 minutes et 8 heures, à la minute près."); return; }
     try {
       await api.modifyRequest(item.id, { title, project_name: noProject ? "" : project,
         no_project: noProject, session_type: type, agenda, start_at: parisISO(start), end_at: parisISO(end),
@@ -55,12 +67,13 @@ export default function EditSession({ item, user, members, onClose, onSaved }: {
         <label className="field-label">Titre<input className="input" required minLength={3} maxLength={160} value={title} onChange={e => setTitle(e.target.value)} /></label>
         <label className="field-label">Type<input className="input" required minLength={2} maxLength={60} value={type} onChange={e => setType(e.target.value)} /></label>
         <label className="field-label">Ordre du jour<textarea className="input textarea" required minLength={10} maxLength={4000} value={agenda} onChange={e => setAgenda(e.target.value)} /></label>
-        <label className="field-label">Début · heure de Paris<input className="input" type="datetime-local" required step={1800} value={start} onChange={e => setStart(e.target.value)} /></label>
-        <label className="field-label">Fin · heure de Paris<input className="input" type="datetime-local" required step={1800} value={end} onChange={e => setEnd(e.target.value)} /></label>
+        <label className="field-label">Début · heure de Paris<input className="input" type="datetime-local" required step={900} value={start} onChange={e => { setStart(e.target.value); setDuration(periodDuration(e.target.value, end)); }} /></label>
+        <DurationPicker minutes={duration} onChange={changeDuration} />
+        <label className="field-label">Fin · heure de Paris<input className="input" type="datetime-local" required step={60} value={end} onChange={e => { setEnd(e.target.value); setDuration(periodDuration(start, e.target.value)); }} /></label>
         <p>Les disponibilités seront vérifiées à l’envoi puis à l’acceptation. Un déplacement chevauchant l’événement actuel peut être signalé occupé par Google.</p>
         <fieldset><legend>Participants</legend>{members.map(member => <label className="field-label" key={member.email}><input type="checkbox" checked={emails.includes(member.email)} onChange={e => setEmails(e.target.checked ? [...emails, member.email] : emails.filter(email => email !== member.email))} /> {member.name}</label>)}</fieldset>
-        {user.is_manager && <label className="field-label"><input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} /> Forcer le créneau malgré les conflits (ils seront affichés avant acceptation)</label>}
-        <button className="btn btn-primary" disabled={saving || !emails.length}> {saving ? "Envoi…" : "Soumettre la modification au manager"}</button>
+        <label className="field-label"><input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} /> Forcer le créneau malgré les conflits (validation du manager requise)</label>
+        <button className="btn btn-primary" disabled={saving || !emails.length || !validDuration(duration)}> {saving ? "Envoi…" : "Soumettre la modification au manager"}</button>
       </fieldset>
     </form>
   </section>;

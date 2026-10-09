@@ -1,6 +1,12 @@
 # 3istor Sessions
 
-Plateforme de planification de sessions de travail pour une petite équipe. Un membre sélectionne les participants et la durée, l'application propose les créneaux où tout le monde est disponible, puis le manager accepte ou refuse la demande. Le manager peut aussi forcer explicitement un créneau en voyant quels membres sont occupés. Une page de nombres de retards, visible par toute l'équipe et modifiable uniquement par le manager, complète le suivi.
+Plateforme de planification de sessions de travail pour une petite équipe. Un membre sélectionne les participants et la durée, l'application propose les créneaux où tout le monde est disponible, puis le manager accepte ou refuse la demande. Chaque membre peut aussi demander un créneau forcé en voyant quels membres sont occupés ; seul un manager peut accepter ou refuser cette demande. La durée peut être choisie parmi les raccourcis (dont 15 minutes) ou saisie en minutes/heures, de 15 minutes à 8 heures à la minute près. Les départs proposés sont espacés de 15 minutes. Une page de nombres de retards, visible par toute l'équipe et modifiable uniquement par le manager, complète le suivi.
+
+## Choix d'un créneau
+
+La réservation présente une grille hebdomadaire (08:00–21:00, heure de Paris), avec les périodes occupées et les noms des participants concernés. Les occupations des agendas collectifs sont signalées sans détails d'événements. Les créneaux proposés à droite et les départs sélectionnables dans la grille restent entièrement libres en mode normal ; le mode forcé doit être activé explicitement pour choisir un conflit, toujours soumis au manager. Le bloc « Votre session » montre la position et la durée exactes de la sélection.
+
+Les vues Jour/Semaine, le changement de date ou de durée et l'actualisation sont disponibles. Sur mobile, une barre de jours accompagne la grille d'une seule journée. L'API `/api/availability/calendar` lit les calendriers une fois pour la semaine, fusionne les occupations Google/base de données et ne renvoie jamais de titre, de description ou d'identifiant d'événement personnel. Les disponibilités sont toujours revérifiées à l'envoi et à l'acceptation.
 
 ## Démarrage local
 
@@ -62,7 +68,7 @@ Après sa connexion Google, chaque membre clique sur **Connecter mon agenda**. U
 
 `GOOGLE_TARGET_CALENDAR_ID` utilise par défaut **Agenda 3-ISTOR** (`913d31d1666fcfd7a8ad0c6447679a0ceafdbff55a20adb5a2dea1f655f39c92@group.calendar.google.com`), même si la variable est absente ou vide dans un ancien déploiement Argo CD. Une valeur explicite non vide remplace ce défaut. L'application ne crée jamais d'agenda secondaire. Le compte défini par `MANAGER_EMAIL` doit avoir le droit de modifier les événements de la cible, directement ou via le groupe auquel l'agenda est partagé. Lors de la connexion, l'application vérifie que le rôle renvoyé par Google est bien `writer` ou `owner` sur cet agenda exact. Après toute modification de la cible ou des permissions, reconnectez l'agenda du manager.
 
-Le calcul des disponibilités appelle exclusivement l'endpoint Google FreeBusy : aucun titre, description, participant ou détail d'un événement personnel n'est demandé. La recherche normale renvoie seulement les créneaux entièrement libres. La recherche forcée, réservée au manager, conserve cette confidentialité mais lui indique les membres occupés. Ces identités sont masquées dans la vue des autres membres. Lors de l'acceptation, l'API revérifie le créneau ; si les conflits d'une demande forcée ont changé, elle demande une nouvelle confirmation. Elle crée ensuite un événement unique dans Agenda 3-ISTOR, ajoute les participants comme invités et utilise `sendUpdates=all`. L'identifiant stable empêche les doublons en cas de nouvelle tentative.
+Le calcul des disponibilités appelle exclusivement l'endpoint Google FreeBusy : aucun titre, description, participant ou détail d'un événement personnel n'est demandé. La recherche normale renvoie seulement les créneaux entièrement libres. La recherche forcée est accessible à tous les membres connectés et indique les participants occupés sans révéler les détails de leurs événements. Ces identités sont masquées dans la vue des autres membres. Lors de l'acceptation, l'API revérifie le créneau ; si les conflits d'une demande forcée ont changé, elle demande une nouvelle confirmation. Elle crée ensuite un événement unique dans Agenda 3-ISTOR, ajoute les participants comme invités et utilise `sendUpdates=all`. L'identifiant stable empêche les doublons en cas de nouvelle tentative.
 
 Pour qu'un ou plusieurs agendas collectifs bloquent aussi les créneaux de toute l'équipe, ajoutez leurs identifiants dans `GOOGLE_AVAILABILITY_CALENDAR_IDS`, séparés par des virgules. L'application consulte uniquement leurs périodes libre/occupé avec l'autorisation d'un membre et ne crée, ne modifie ni ne supprime aucun événement dans ces agendas.
 
@@ -74,7 +80,7 @@ Pour qu'un ou plusieurs agendas collectifs bloquent aussi les créneaux de toute
 - Les mutations provenant d'une origine différente de `FRONTEND_URL` sont refusées en production.
 - Les réponses API privées ne sont pas mises en cache et incluent des en-têtes de sécurité. La documentation interactive de l'API est désactivée en production.
 - Le mode démo, HTTP, les secrets faibles, les hôtes ouverts et les identités d'équipe d'exemple sont refusés automatiquement si `APP_ENV=production`.
-- Les entrées sont validées côté API, les conflits normaux sont revérifiés au moment de l'envoi et de l'acceptation. Seul le manager peut contourner explicitement ce blocage avec une demande marquée comme forcée.
+- Les entrées sont validées côté API, les conflits normaux sont revérifiés au moment de l'envoi et de l'acceptation. Chaque membre peut soumettre une demande marquée comme forcée, y compris pour modifier sa session ; seul un manager peut l'accepter après examen des conflits.
 - Pour plusieurs instances, remplacez SQLite par PostgreSQL via `DATABASE_URL`.
 - Les notifications in-app sont toujours créées. L'e-mail au manager est envoyé si les variables SMTP sont configurées.
 

@@ -48,8 +48,6 @@ def propose(db, settings, user, original_id, payload):
             raise HTTPException(403, "Seul l'auteur ou un manager peut modifier cette session")
         if original.start_at <= datetime.now(timezone.utc) or payload.start_at <= datetime.now(timezone.utc):
             raise HTTPException(422, "Seules les sessions à venir peuvent être modifiées")
-        if payload.force and not user.is_manager:
-            raise HTTPException(403, "Seul le manager peut forcer un créneau")
         pending = db.scalar(select(SessionRevision.request_id).join(
             SessionRequest, SessionRequest.id == SessionRevision.request_id
         ).where(SessionRevision.original_id == original_id, SessionRequest.status == RequestStatus.pending))
@@ -63,7 +61,7 @@ def propose(db, settings, user, original_id, payload):
             revision=SessionRevision(original_id=original.id, snapshot=json.dumps(snapshot(original))))
         busy = conflicts(db, settings, original, proposal)
         if not payload.force and main.has_conflict(busy, proposal.start_at, proposal.end_at):
-            raise HTTPException(409, "Ce créneau est occupé. Choisissez un autre horaire. Un déplacement chevauchant la session actuelle peut nécessiter un forçage explicite du manager.")
+            raise HTTPException(409, "Ce créneau est occupé. Choisissez un autre horaire ou activez le forçage pour soumettre les conflits au manager.")
         if payload.force:
             proposal.force_record = ForcedSession(
                 collective_calendar_busy=main.collective_calendar_has_conflict(busy, proposal.start_at, proposal.end_at),

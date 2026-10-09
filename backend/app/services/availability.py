@@ -62,6 +62,34 @@ def periods_overlap(
     return start_at < busy_end and end_at > busy_start
 
 
+def calendar_busy_blocks(busy: BusyPeriods, opening: datetime, closing: datetime) -> list[DetailedSlot]:
+    """Exact, clipped intervals with names only; never expose event details.
+
+    Split overlaps at their real boundaries and merge identical neighbours.
+    This also deduplicates a session seen both in Google and in our database.
+    """
+    boundaries = sorted({
+        edge
+        for start, end in busy.all
+        if start < closing and end > opening and start < end
+        for edge in (max(start, opening), min(end, closing))
+    })
+    blocks: list[DetailedSlot] = []
+    for start, end in zip(boundaries, boundaries[1:]):
+        emails = sorted(email for email, periods in busy.by_participant.items()
+                        if any(periods_overlap(start, end, period) for period in periods))
+        collective = any(periods_overlap(start, end, period) for period in busy.collective)
+        if not emails and not collective:
+            continue
+        if (blocks and blocks[-1].end_at == start
+                and blocks[-1].busy_participant_emails == emails
+                and blocks[-1].collective_calendar_busy == collective):
+            previous = blocks.pop()
+            start = previous.start_at
+        blocks.append(DetailedSlot(start, end, emails, collective))
+    return blocks
+
+
 def compute_detailed_slots(
     *,
     day: date,
@@ -71,7 +99,7 @@ def compute_detailed_slots(
 ) -> list[DetailedSlot]:
     opening, closing = working_window(day, timezone_name)
     duration = timedelta(minutes=duration_minutes)
-    increment = timedelta(minutes=30)
+    increment = timedelta(minutes=15)
     now = datetime.now(opening.tzinfo)
     slots: list[DetailedSlot] = []
     cursor = opening
@@ -107,7 +135,7 @@ def compute_slots(
 ) -> list[tuple[datetime, datetime]]:
     opening, closing = working_window(day, timezone_name)
     duration = timedelta(minutes=duration_minutes)
-    increment = timedelta(minutes=30)
+    increment = timedelta(minutes=15)
     now = datetime.now(opening.tzinfo)
     slots: list[tuple[datetime, datetime]] = []
     cursor = opening

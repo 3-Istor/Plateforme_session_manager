@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
+import pytest
 
 from backend.app.services.availability import (
     BusyPeriods,
@@ -30,6 +31,36 @@ def test_duration_reduces_slot_count():
     short = compute_slots(day=day, duration_minutes=30, timezone_name="Europe/Paris", busy_periods=[])
     long = compute_slots(day=day, duration_minutes=120, timezone_name="Europe/Paris", busy_periods=[])
     assert len(short) > len(long)
+
+
+@pytest.mark.parametrize("minutes", [15, 45, 50, 66, 95, 480])
+def test_custom_durations_use_quarter_hour_starts_and_respect_conflicts(minutes):
+    from datetime import timedelta
+    zone = ZoneInfo("Europe/Paris")
+    day = date(2099, 5, 12)
+    busy_period = (datetime(2099, 5, 12, 10, 5, tzinfo=zone), datetime(2099, 5, 12, 10, 20, tzinfo=zone))
+    busy = BusyPeriods(by_participant={"member@example.com": [busy_period]})
+    regular = compute_slots(day=day, duration_minutes=minutes, timezone_name="Europe/Paris", busy_periods=busy.all)
+    forced = compute_detailed_slots(day=day, duration_minutes=minutes, timezone_name="Europe/Paris", busy_periods=busy)
+    assert regular
+    assert {(s.start_at, s.end_at) for s in forced if not s.busy_participant_emails} == set(regular)
+    for slot in forced:
+        assert slot.start_at.minute % 15 == 0
+        assert slot.end_at - slot.start_at == timedelta(minutes=minutes)
+        assert slot.end_at <= datetime(2099, 5, 12, 21, tzinfo=zone)
+        overlap = slot.start_at < busy_period[1] and slot.end_at > busy_period[0]
+        assert slot.busy_participant_emails == (["member@example.com"] if overlap else [])
+
+
+def test_fifteen_minute_slots_include_quarters_and_exclude_only_busy_quarters():
+    zone = ZoneInfo("Europe/Paris")
+    day = date(2099, 5, 12)
+    busy = [(datetime(2099, 5, 12, 8, 15, tzinfo=zone), datetime(2099, 5, 12, 8, 30, tzinfo=zone))]
+    slots = compute_slots(day=day, duration_minutes=15, timezone_name="Europe/Paris", busy_periods=busy)
+    starts = {start.strftime("%H:%M") for start, _ in slots}
+    assert len(slots) == 51
+    assert {"08:00", "08:30", "08:45", "20:45"} <= starts
+    assert "08:15" not in starts
 
 
 def test_detailed_slots_keep_member_and_collective_conflicts_separate():

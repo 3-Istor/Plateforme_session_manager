@@ -4,7 +4,7 @@ import logging
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from threading import Event, Lock, Thread
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -43,6 +43,8 @@ from .models import (
 )
 from .schemas import (
     AvailabilityQuery,
+    CalendarAvailability,
+    CalendarDayAvailability,
     AuthorizationUrl,
     CalendarStatus,
     DecisionIn,
@@ -62,6 +64,7 @@ from .schemas import (
 from .services.availability import (
     BusyPeriods,
     compute_detailed_slots,
+    calendar_busy_blocks,
     compute_slots,
     periods_overlap,
     working_window,
@@ -510,7 +513,7 @@ def availability(
 def forced_availability(
     query: AvailabilityQuery,
     db: Session = Depends(get_db),
-    _: User = Depends(manager_only),
+    _: User = Depends(current_user),
     settings: Settings = Depends(get_settings),
 ):
     emails = validate_participants([str(email) for email in query.participant_emails], settings)
@@ -530,6 +533,39 @@ def forced_availability(
             busy_periods=busy,
         )
     ]
+
+
+@app.post("/api/availability/calendar", response_model=CalendarAvailability)
+def calendar_availability(
+    query: AvailabilityQuery,
+    db: Session = Depends(get_db),
+    _: User = Depends(current_user),
+    settings: Settings = Depends(get_settings),
+):
+    emails = validate_participants([str(email) for email in query.participant_emails], settings)
+    first_day = query.day - timedelta(days=query.day.weekday())
+    days = [first_day + timedelta(days=offset) for offset in range(7)]
+    start, _ = working_window(days[0], query.timezone)
+    _, end = working_window(days[-1], query.timezone)
+    # One Google FreeBusy query per calendar for the whole week, not seven.
+    busy = combined_busy_periods(db, settings, emails, start, end)
+
+    def serialize(slot):
+        return ForcedSlot(start_at=slot.start_at, end_at=slot.end_at,
+                          busy_participant_emails=slot.busy_participant_emails,
+                          collective_calendar_busy=slot.collective_calendar_busy)
+
+    result = []
+    for day in days:
+        opening, closing = working_window(day, query.timezone)
+        result.append(CalendarDayAvailability(
+            day=day,
+            slots=[serialize(slot) for slot in compute_detailed_slots(
+                day=day, duration_minutes=query.duration_minutes,
+                timezone_name=query.timezone, busy_periods=busy)],
+            busy=[serialize(block) for block in calendar_busy_blocks(busy, opening, closing)],
+        ))
+    return CalendarAvailability(timezone=query.timezone, days=result)
 
 
 @app.get("/api/requests", response_model=list[SessionOut])
@@ -557,8 +593,8 @@ def list_requests(
     items = db.scalars(statement).unique().all()
     if user.is_manager:
         return items
-    # The forced-slot endpoint and conflict identities are manager-only. Team
-    # members can see that a request was forced without learning who was busy.
+    # Conflict identities are shown when choosing a forced slot and to managers
+    # reviewing it, but are not broadcast to other participants in request lists.
     return [
         SessionOut.model_validate(item).model_copy(
             update={
@@ -582,8 +618,6 @@ def create_request(
     requester = str(user.email)
     if requester not in emails:
         emails.append(requester)
-    if payload.force and not user.is_manager:
-        raise HTTPException(status_code=403, detail="Seul le manager peut forcer un créneau")
     if payload.start_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=422, detail="Le créneau doit être dans le futur")
 

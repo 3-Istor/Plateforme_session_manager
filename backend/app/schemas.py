@@ -42,7 +42,7 @@ class Member(BaseModel):
 
 class AvailabilityQuery(BaseModel):
     day: date
-    duration_minutes: int = Field(ge=30, le=480, multiple_of=30)
+    duration_minutes: int = Field(ge=15, le=480)
     participant_emails: list[EmailStr] = Field(min_length=1, max_length=20)
     timezone: str = "Europe/Paris"
 
@@ -67,6 +67,17 @@ class Slot(BaseModel):
 class ForcedSlot(Slot):
     busy_participant_emails: list[str]
     collective_calendar_busy: bool
+
+
+class CalendarDayAvailability(BaseModel):
+    day: date
+    slots: list[ForcedSlot]
+    busy: list[ForcedSlot]
+
+
+class CalendarAvailability(BaseModel):
+    timezone: str
+    days: list[CalendarDayAvailability]
 
 
 class SessionCreate(BaseModel):
@@ -123,18 +134,20 @@ class SessionCreate(BaseModel):
         if self.end_at <= self.start_at:
             raise ValueError("La fin doit être après le début")
         duration = (self.end_at - self.start_at).total_seconds() / 60
-        if duration < 30 or duration > 480 or duration % 30:
-            raise ValueError("La durée doit être un multiple de 30 minutes, entre 30 minutes et 8 heures")
+        if duration < 15 or duration > 480 or duration % 1:
+            raise ValueError("La durée doit être un nombre entier de minutes, entre 15 minutes et 8 heures")
         zone = ZoneInfo(self.timezone)
         local_start = self.start_at.astimezone(zone)
         local_end = self.end_at.astimezone(zone)
         if local_start.date() != local_end.date():
             raise ValueError("Le début et la fin doivent être le même jour")
         if any(
-            value.minute not in {0, 30} or value.second != 0 or value.microsecond != 0
+            value.second != 0 or value.microsecond != 0
             for value in (local_start, local_end)
         ):
-            raise ValueError("Le créneau doit commencer et finir sur une demi-heure")
+            raise ValueError("Le créneau doit commencer et finir à la minute près")
+        if local_start.minute % 15:
+            raise ValueError("Le créneau doit commencer sur un quart d'heure")
         if local_start.time().replace(tzinfo=None) < time(8) or local_end.time().replace(tzinfo=None) > time(21):
             raise ValueError("Le créneau doit être compris entre 08:00 et 21:00")
         return self

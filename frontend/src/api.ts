@@ -1,4 +1,4 @@
-import type { AppConfig, CalendarStatus, LatenessEntry, Member, Notification, SessionRequest, Slot, User } from "./types";
+import type { AppConfig, CalendarAvailability, CalendarStatus, LatenessEntry, Member, Notification, SessionRequest, Slot, User } from "./types";
 
 export const SCHEDULE_TIMEZONE = "Europe/Paris";
 
@@ -69,6 +69,11 @@ export const api = {
     }
   },
   members: () => request<Member[]>("/api/members"),
+  calendarAvailability: (day: string, durationMinutes: number, participantEmails: string[], signal?: AbortSignal) =>
+    request<CalendarAvailability>("/api/availability/calendar", {
+      method: "POST", signal,
+      body: JSON.stringify({day, duration_minutes: durationMinutes, participant_emails: participantEmails, timezone: SCHEDULE_TIMEZONE}),
+    }),
   requests: (scope: "mine" | "all") => request<SessionRequest[]>(`/api/requests?scope=${scope}`),
   notifications: () => request<Notification[]>("/api/notifications"),
   calendarStatus: () => request<CalendarStatus>("/api/google/calendar/status"),

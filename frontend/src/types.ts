@@ -28,6 +28,8 @@ export type Slot = {
   busy_participant_emails?: string[];
   collective_calendar_busy?: boolean;
 };
+export type CalendarDayAvailability = { day: string; slots: Slot[]; busy: Slot[] };
+export type CalendarAvailability = { timezone: string; days: CalendarDayAvailability[] };
 export type RequestStatus = "pending" | "approved" | "declined";
 
 export type SessionRequest = {

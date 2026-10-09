@@ -95,6 +95,9 @@ main { grid-column: 2; min-width: 0; }
 .login-screen, .app-loader { min-height: 100vh; display: grid; place-items: center; background: #17143e; color: white; position: relative; overflow: hidden; }.login-glow { position: absolute; width: 600px; height: 600px; border-radius: 50%; background: radial-gradient(circle, rgba(99,80,205,.3), transparent 65%); }.login-card { width: min(440px, calc(100vw - 32px)); text-align: center; padding: 42px 48px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); backdrop-filter: blur(14px); border-radius: 22px; position: relative; box-shadow: 0 30px 80px rgba(5,3,30,.3); }.login-card .eyebrow { color: #a39bdc; }.login-card h1 { font-size: 27px; line-height: 1.25; margin: 10px 0 0; }.login-card > p { color: #aaa7c4; font-size: 12px; line-height: 1.6; }.google-signin { min-height: 44px; display: flex; justify-content: center; margin: 24px 0 17px; }.login-note { color: #8986a3; font-size: 9px; display: flex; align-items: center; justify-content: center; gap: 6px; }.form-error { color: #ff9d9d !important; }.app-loader { gap: 15px; align-content: center; }.error-card { text-align: center; max-width: 400px; padding: 30px; }.error-card > svg { color: #ff8079; }.error-card p { color: #b4b1c9; font-size: 12px; }.spin { animation: spin .8s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }
 
 /* Forced scheduling */
+.custom-duration { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+.duration-help { font-size: 10px; color: #767382; line-height: 1.5; }
+.duration-help[role="alert"] { color: #b83f49; }
 .btn-force { color: #7b351c; background: #fff0e8; border: 1px solid #f2ad87; box-shadow: 0 7px 18px rgba(190, 91, 45, .09); }
 .btn-force:hover:not(:disabled) { background: #ffe7da; border-color: #e88e60; }
 .availability-actions { display: grid; gap: 8px; }

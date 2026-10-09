@@ -162,13 +162,21 @@ def test_calendar_patch_uses_same_target_id_and_notifies_attendees(monkeypatch):
     assert calls[0]["sendUpdates"] == "all"
 
 
-def test_member_cannot_force_modification(backend_context):
+def test_member_can_force_modification_but_original_waits_for_manager(backend_context):
+    from backend.tests.test_session_features import add_busy_request
     db, settings = backend_context
     item = original(db, settings)
-    data = payload().model_copy(update={"force": True})
-    with pytest.raises(HTTPException) as denied:
-        main.propose_modification(item.id, data, db, user(MEMBER), settings)
-    assert denied.value.status_code == 403
+    old = revisions.snapshot(item)
+    add_busy_request(db, 14, 15, MEMBER)
+    data = payload(14, 15).model_copy(update={"force": True})
+    change = main.propose_modification(item.id, data, db, user(MEMBER), settings)
+    assert change.status == RequestStatus.pending
+    assert change.is_forced
+    assert change.busy_participant_emails == [MEMBER]
+    assert revisions.snapshot(item) == old
+    main.decide_request(change.id, DecisionIn(status="approved"), db, user(MANAGER), settings)
+    assert item.start_at == change.start_at
+    assert item.is_forced
 
 
 def test_forced_modification_requires_reconfirmation_for_new_conflicts(backend_context):

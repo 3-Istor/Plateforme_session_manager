@@ -114,8 +114,51 @@ def request_payload(start_hour: int, end_hour: int, *, force: bool = False) -> d
 def test_new_api_routes_are_registered():
     paths = main.app.openapi()["paths"]
     assert "post" in paths["/api/availability/force"]
+    assert "post" in paths["/api/availability/calendar"]
     assert "get" in paths["/api/lateness"]
     assert "patch" in paths["/api/lateness/{email}"]
+
+
+def test_member_force_http_routes_keep_login_and_manager_approval_required(backend_context, monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend.app.auth import create_user_session
+    from backend.app.config import get_settings
+    from backend.app.database import get_db
+    db, settings = backend_context
+    add_busy_request(db, 10, 11)
+    settings.auth_mode = "google"
+    monkeypatch.setattr(main, "combined_busy_periods", lambda db, settings, emails, start, end:
+        main.database_busy_periods(db, emails, start, end))
+    overrides = main.app.dependency_overrides.copy()
+    main.app.dependency_overrides[get_settings] = lambda: settings
+    main.app.dependency_overrides[get_db] = lambda: db
+    try:
+        with TestClient(main.app) as client:
+            query = {"day": "2099-05-12", "duration_minutes": 15, "participant_emails": [MEMBER]}
+            assert client.post("/api/availability/force", json=query).status_code == 401
+            assert client.post("/api/availability/calendar", json=query).status_code == 401
+            token = create_user_session(db, user(MEMBER), settings)
+            client.cookies.set(settings.session_cookie_name, token)
+            forced = client.post("/api/availability/force", json=query)
+            assert forced.status_code == 200
+            busy = next(s for s in forced.json() if s["start_at"].startswith("2099-05-12T10:15"))
+            assert busy["busy_participant_emails"] == [MEMBER]
+            calendar = client.post("/api/availability/calendar", json=query)
+            assert calendar.status_code == 200
+            assert len(calendar.json()["days"]) == 7
+            assert "Session existante" not in calendar.text
+            assert MEMBER in calendar.text
+            payload = {**request_payload(10, 11, force=True), "start_at": busy["start_at"], "end_at": busy["end_at"]}
+            created = client.post("/api/requests", json=payload)
+            assert created.status_code == 201
+            assert created.json()["is_forced"] is True
+            assert created.json()["status"] == "pending"
+            assert client.patch(f'/api/requests/{created.json()["id"]}/decision', json={"status": "approved"}).status_code == 403
+            client.cookies.clear()
+            assert client.post("/api/requests", json=payload).status_code == 401
+    finally:
+        main.app.dependency_overrides.clear()
+        main.app.dependency_overrides.update(overrides)
 
 
 @pytest.mark.parametrize("project,no_project,expected", [
@@ -210,7 +253,7 @@ def test_manager_connection_is_ready_only_for_verified_exact_target(
     assert has_required_connection(db, settings, MANAGER, True) is False
 
 
-def test_forced_availability_is_manager_only_and_identifies_busy_members(backend_context):
+def test_forced_availability_identifies_busy_members_for_any_member(backend_context):
     db, settings = backend_context
     add_busy_request(db, 10, 11)
     query = AvailabilityQuery(
@@ -220,12 +263,9 @@ def test_forced_availability_is_manager_only_and_identifies_busy_members(backend
         timezone="Europe/Paris",
     )
 
-    with pytest.raises(HTTPException) as forbidden:
-        main.forced_availability(query, db, manager_only(user(MEMBER)), settings)
-    assert forbidden.value.status_code == 403
-
     regular = main.availability(query, db, user(MEMBER), settings)
-    forced = main.forced_availability(query, db, manager_only(user(MANAGER)), settings)
+    forced = main.forced_availability(query, db, user(MEMBER), settings)
+    assert forced == main.forced_availability(query, db, user(MANAGER), settings)
     regular_starts = {slot.start_at.astimezone(PARIS).strftime("%H:%M") for slot in regular}
     forced_by_start = {
         slot.start_at.astimezone(PARIS).strftime("%H:%M"): slot for slot in forced
@@ -236,7 +276,7 @@ def test_forced_availability_is_manager_only_and_identifies_busy_members(backend
     assert forced_by_start["10:00"].busy_participant_emails == [MEMBER]
     assert forced_by_start["10:00"].collective_calendar_busy is False
     assert forced_by_start["08:00"].busy_participant_emails == []
-    assert len(forced) == 25
+    assert len(forced) == 49
 
 
 def test_forced_request_is_persisted_and_demo_approval_never_calls_google(
@@ -245,21 +285,11 @@ def test_forced_request_is_persisted_and_demo_approval_never_calls_google(
     db, settings = backend_context
     add_busy_request(db, 10, 11)
 
-    with pytest.raises(HTTPException) as forbidden:
-        main.create_request(
-            SessionCreate(**request_payload(10, 11, force=True)),
-            BackgroundTasks(),
-            db,
-            user(MEMBER),
-            settings,
-        )
-    assert forbidden.value.status_code == 403
-
     created = main.create_request(
         SessionCreate(**request_payload(10, 11, force=True)),
         BackgroundTasks(),
         db,
-        user(MANAGER),
+        user(MEMBER),
         settings,
     )
     body = SessionOut.model_validate(created)
@@ -267,6 +297,8 @@ def test_forced_request_is_persisted_and_demo_approval_never_calls_google(
     assert body.session_type == "Travail"
     assert body.agenda == "Un ordre du jour suffisamment précis."
     assert body.is_forced is True
+    assert body.status == RequestStatus.pending
+    assert body.requester_email == MEMBER
     assert body.busy_participant_emails == [MEMBER]
 
     member_view = main.list_requests("mine", db, user(MEMBER))
@@ -308,7 +340,7 @@ def test_forced_approval_requires_reconfirmation_when_conflicts_change(
         SessionCreate(**request_payload(10, 11, force=True)),
         BackgroundTasks(),
         db,
-        user(MANAGER),
+        user(MEMBER),
         settings,
     )
     add_busy_request(db, 10, 11, MANAGER)
@@ -447,7 +479,7 @@ def test_session_schema_trims_text_and_enforces_slot_invariants():
         {**request_payload(8, 9), "title": "   "},
         {
             **request_payload(8, 9),
-            "end_at": datetime(2099, 5, 12, 8, 45, tzinfo=PARIS),
+            "end_at": datetime(2099, 5, 12, 8, 10, tzinfo=PARIS),
         },
         {
             **request_payload(8, 9),
@@ -463,6 +495,40 @@ def test_session_schema_trims_text_and_enforces_slot_invariants():
     for payload in invalid_payloads:
         with pytest.raises(ValidationError):
             SessionCreate(**payload)
+
+
+@pytest.mark.parametrize("minutes", [15, 45, 50, 66, 95, 480])
+def test_custom_duration_is_accepted_for_search_and_request(backend_context, minutes):
+    from datetime import timedelta
+    db, settings = backend_context
+    query = AvailabilityQuery(day="2099-05-12", duration_minutes=minutes, participant_emails=[MEMBER])
+    slot = next(s for s in main.availability(query, db, user(MEMBER), settings) if s.start_at.minute == 15)
+    payload = SessionCreate(**{**request_payload(8, 9), "start_at": slot.start_at, "end_at": slot.end_at})
+    created = main.create_request(payload, BackgroundTasks(), db, user(MEMBER), settings)
+    assert created.end_at - created.start_at == timedelta(minutes=minutes)
+    assert created.status == RequestStatus.pending
+    assert not created.is_forced
+    approved = main.decide_request(created.id, DecisionIn(status="approved"), db, manager_only(user(MANAGER)), settings)
+    assert approved.status == RequestStatus.approved
+
+
+@pytest.mark.parametrize("minutes", [0, 14, 481, 15.5])
+def test_invalid_custom_durations_are_rejected(minutes):
+    from datetime import timedelta
+    with pytest.raises(ValidationError):
+        AvailabilityQuery(day="2099-05-12", duration_minutes=minutes, participant_emails=[MEMBER])
+    start = datetime(2099, 5, 12, 8, tzinfo=PARIS)
+    with pytest.raises(ValidationError):
+        SessionCreate(**{**request_payload(8, 9), "end_at": start + timedelta(minutes=minutes)})
+
+
+def test_custom_duration_still_requires_quarter_hour_start_and_working_hours():
+    for start, end in [
+        (datetime(2099, 5, 12, 8, 10, tzinfo=PARIS), datetime(2099, 5, 12, 9, tzinfo=PARIS)),
+        (datetime(2099, 5, 12, 20, 45, tzinfo=PARIS), datetime(2099, 5, 12, 21, 1, tzinfo=PARIS)),
+    ]:
+        with pytest.raises(ValidationError):
+            SessionCreate(**{**request_payload(8, 9), "start_at": start, "end_at": end})
 
 
 def test_lateness_is_visible_to_team_but_only_manager_can_update(backend_context):
