@@ -30,6 +30,7 @@ export default function RequestCalendar({item, members, onClose, onDecision}: {
   const busy = days.flatMap(value => value.busy).filter(value => +new Date(value.start_at) < +new Date(item.end_at) && +new Date(value.end_at) > +new Date(item.start_at));
   const busyEmails = [...new Set(busy.flatMap(value => value.busy_participant_emails || []))];
   const collectiveBusy = busy.some(value => value.collective_calendar_busy);
+  const sessionWeekVisible = days.some(value => value.day === sessionDay);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -63,7 +64,8 @@ export default function RequestCalendar({item, members, onClose, onDecision}: {
         {item.previous_session && <div className="review-previous"><strong>Avant modification</strong><p>{item.previous_session.title}</p><p>{dateValue(item.previous_session.start_at).split("-").reverse().join("/")} · {time(item.previous_session.start_at)}–{time(item.previous_session.end_at)}</p></div>}
         <p className="review-agenda">{item.agenda}</p><button className="btn btn-ghost full" onClick={() => { setDay(sessionDay); setRefresh(value => value + 1); }}><CalendarDays size={15} />Revenir à la session</button>
         {item.status === "approved" && <p className="review-help">L'événement déjà enregistré dans Google peut également apparaître parmi les périodes occupées.</p>}
-        {item.status === "pending" && <div className="review-decision-actions"><button className="btn btn-primary full" onClick={() => onDecision(item, "approved")}><Check size={16} />{item.modifies_request_id ? "Accepter la modification" : "Accepter la session"}</button><button className="btn btn-ghost danger full" onClick={() => onDecision(item, "declined")}><X size={16} />Refuser</button></div>}
+        {item.status === "pending" && !sessionWeekVisible && <p className="review-help">Revenez à la session pour vérifier ses conflits et l'accepter.</p>}
+        {item.status === "pending" && <div className="review-decision-actions"><button className="btn btn-primary full" disabled={!sessionWeekVisible} onClick={() => onDecision(item, "approved")}><Check size={16} />{item.modifies_request_id ? "Accepter la modification" : "Accepter la session"}</button><button className="btn btn-ghost danger full" onClick={() => onDecision(item, "declined")}><X size={16} />Refuser</button></div>}
         <p className="review-help">Les agendas sont revérifiés lors de l'acceptation. Cet aperçu ne modifie pas la réservation.</p>
       </>}
     />}

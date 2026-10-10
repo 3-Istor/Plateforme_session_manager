@@ -34,13 +34,19 @@ type Props = {
 export default function SessionCalendar({ days, day, minimumDay, duration, members, forced, slot, loading,
   onDayChange, onWeekChange, onDurationChange, onForceChange, onSelect, onRefresh, onBack, onContinue,
   readOnly = false, previewTitle = "Votre session", previewDay, reviewSummary }: Props) {
-  const [view, setView] = useState<"week" | "day">("week");
+  const [view, setView] = useState<"week" | "day">(() => {
+    try {
+      const saved = localStorage.getItem("sessions_calendar_view");
+      if (saved === "week" || saved === "day") return saved;
+    } catch { /* The calendar also works when storage is unavailable. */ }
+    return window.matchMedia("(max-width: 700px)").matches ? "day" : "week";
+  });
   const previewRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const dateInputRef = useRef<HTMLInputElement>(null);
   const chosenDay = days.find(value => value.day === day);
   const displayedDays = view === "day" ? days.filter(value => value.day === day) : days;
-  const options = chosenDay?.slots.filter(value => forced || !slotHasConflict(value)) || [];
+  const options = day >= minimumDay ? chosenDay?.slots.filter(value => forced || !slotHasConflict(value)) || [] : [];
   const selectedConflict = slot ? slotHasConflict(slot) : false;
   const selectedKey = slot ? `${slot.start_at}/${slot.end_at}` : "";
   const memberName = (email: string) => members.find(value => value.email === email)?.name || email;
@@ -48,14 +54,38 @@ export default function SessionCalendar({ days, day, minimumDay, duration, membe
     value.busy_participant_emails?.length ? `Occupé${value.busy_participant_emails.length > 1 ? "s" : ""} · ${value.busy_participant_emails.map(memberName).join(", ")}` : "",
     value.collective_calendar_busy ? "Agenda collectif" : "",
   ].filter(Boolean).join(" · ");
-  const rangeLabel = days.length ? new Intl.DateTimeFormat("fr-FR", {timeZone: "UTC", day: "numeric", month: "long", year: "numeric"})
+  const rangeLabel = view === "week" && days.length ? new Intl.DateTimeFormat("fr-FR", {timeZone: "UTC", day: "numeric", month: "long", year: "numeric"})
     .formatRange(dayDate(days[0].day), dayDate(days[days.length - 1].day)) : dateLabel(day);
   const durations = [...new Set([15, 30, 45, 60, 90, 120, 180, 240, 480, duration])].sort((a, b) => a - b);
+
+  const changeView = (next: "week" | "day") => {
+    setView(next);
+    try { localStorage.setItem("sessions_calendar_view", next); } catch { /* Optional preference. */ }
+  };
+  const changePeriod = (direction: number) => {
+    if (view === "week") onWeekChange(direction);
+    else {
+      const next = dayDate(day);
+      next.setUTCDate(next.getUTCDate() + direction);
+      onDayChange(next.toISOString().slice(0, 10));
+    }
+  };
+
+  useEffect(() => {
+    // On a narrow screen, reveal the chosen weekday inside the scrollable week.
+    const scroller = scrollRef.current;
+    const column = scroller?.querySelector<HTMLElement>(".calendar-day-column.active");
+    if (!scroller || !column || view !== "week") return;
+    const bounds = column.getBoundingClientRect();
+    const viewport = scroller.getBoundingClientRect();
+    if (bounds.left < viewport.left + 52) scroller.scrollLeft -= viewport.left + 52 - bounds.left;
+    else if (bounds.right > viewport.right) scroller.scrollLeft += bounds.right - viewport.right;
+  }, [day, view, loading]);
 
   useEffect(() => {
     const preview = previewRef.current;
     const scroller = scrollRef.current;
-    if (!preview || !scroller) return;
+    if (!preview || !scroller || (previewDay && previewDay !== day)) return;
     // Reveal the selection without unexpectedly scrolling the whole page.
     const top = Number.parseFloat(preview.style.top);
     const height = Number.parseFloat(preview.style.height);
@@ -66,7 +96,7 @@ export default function SessionCalendar({ days, day, minimumDay, duration, membe
     const viewport = scroller.getBoundingClientRect();
     if (bounds.left < viewport.left + 52) scroller.scrollLeft -= viewport.left + 52 - bounds.left;
     else if (bounds.right > viewport.right) scroller.scrollLeft += bounds.right - viewport.right;
-  }, [selectedKey, view, loading, previewDay, days[0]?.day]);
+  }, [selectedKey, view, loading, previewDay, day, days[0]?.day]);
 
   return <section className={`session-calendar ${forced ? "is-forced" : ""} ${readOnly ? "calendar-review" : ""}`} aria-busy={loading}>
     <div className="session-calendar-heading">
@@ -74,30 +104,32 @@ export default function SessionCalendar({ days, day, minimumDay, duration, membe
     </div>
     <div className="session-calendar-toolbar">
       <div className="calendar-date-controls">
-        <button type="button" aria-label="Semaine précédente" disabled={loading || !days.length || days[0].day <= minimumDay} onClick={() => onWeekChange(-1)}><ChevronLeft size={17} /></button>
+        <button type="button" aria-label={view === "week" ? "Semaine précédente" : "Jour précédent"} disabled={loading} onClick={() => changePeriod(-1)}><ChevronLeft size={17} /></button>
         <strong>{rangeLabel}</strong>
-        <button type="button" aria-label="Semaine suivante" disabled={loading} onClick={() => onWeekChange(1)}><ChevronRight size={17} /></button>
+        <button type="button" aria-label={view === "week" ? "Semaine suivante" : "Jour suivant"} disabled={loading} onClick={() => changePeriod(1)}><ChevronRight size={17} /></button>
       </div>
-      <label className="calendar-date-picker" onClick={() => { if (loading) return; try { dateInputRef.current?.showPicker(); } catch { dateInputRef.current?.focus(); } }}><span className="sr-only">Choisir la date</span><CalendarDays size={15} /><span aria-hidden="true">{day.split("-").reverse().join("/")}</span><input ref={dateInputRef} aria-label="Choisir la date" type="date" lang="fr-FR" min={minimumDay} value={day} disabled={loading} onChange={event => { if (event.target.value >= minimumDay) onDayChange(event.target.value); }} /></label>
+      <label className="calendar-date-picker" onClick={() => { if (loading) return; try { dateInputRef.current?.showPicker(); } catch { dateInputRef.current?.focus(); } }}><span className="sr-only">Choisir la date</span><CalendarDays size={15} /><span aria-hidden="true">{day.split("-").reverse().join("/")}</span><input ref={dateInputRef} aria-label="Choisir la date" type="date" lang="fr-FR" value={day} disabled={loading} onChange={event => { if (event.target.value) onDayChange(event.target.value); }} /></label>
       {!readOnly && <label className="calendar-duration"><Clock3 size={15} /><select aria-label="Durée de la session" value={duration} disabled={loading} onChange={event => onDurationChange(Number(event.target.value))}>
         {durations.map(value => <option key={value} value={value}>{value} min</option>)}
       </select></label>}
       <button className="calendar-refresh" type="button" aria-label="Actualiser les disponibilités" disabled={loading} onClick={onRefresh}><RefreshCw size={16} /></button>
-      <div className="calendar-view-controls" aria-label="Vue du calendrier"><button type="button" aria-pressed={view === "week"} className={view === "week" ? "active" : ""} onClick={() => setView("week")}>Semaine</button><button type="button" aria-pressed={view === "day"} className={view === "day" ? "active" : ""} onClick={() => setView("day")}>Jour</button></div>
+      <div className="calendar-view-controls" role="group" aria-label="Vue du calendrier"><button type="button" aria-pressed={view === "week"} className={view === "week" ? "active" : ""} onClick={() => changeView("week")}>Semaine</button><button type="button" aria-pressed={view === "day"} className={view === "day" ? "active" : ""} onClick={() => changeView("day")}>Jour</button></div>
     </div>
     <div className="calendar-filter-row">
       <div className="calendar-members">{members.map(member => <span key={member.email} title={member.name}><i style={{background: member.color}} />{member.name}</span>)}</div>
       {!readOnly && <div className="calendar-mode-controls"><button type="button" aria-pressed={!forced} className={!forced ? "active" : ""} disabled={loading} onClick={() => onForceChange(false)}><ShieldCheck size={15} /> Créneaux libres</button><button type="button" aria-pressed={forced} className={forced ? "force active" : "force"} disabled={loading} onClick={() => onForceChange(true)}><AlertTriangle size={15} /> Forcer un créneau</button></div>}
     </div>
     {forced && !readOnly && <p className="calendar-force-note"><AlertTriangle size={16} /> Les créneaux occupés deviennent sélectionnables. Le manager devra valider les conflits.</p>}
-    <div className="calendar-mobile-days" aria-label="Jour à afficher">{days.map(value => <button key={value.day} type="button" disabled={loading || value.day < minimumDay} aria-pressed={value.day === day} className={value.day === day ? "active" : ""} onClick={() => onDayChange(value.day)}>
+    {!readOnly && day < minimumDay && <p className="calendar-history-note">Journée passée : consultation du planning uniquement, aucune réservation possible.</p>}
+    <p className={`calendar-scroll-hint ${view === "week" ? "visible" : ""}`}>Faites glisser le calendrier horizontalement pour voir les autres jours.</p>
+    <div className="calendar-mobile-days" aria-label="Jour à afficher">{days.map(value => <button key={value.day} type="button" disabled={loading} aria-pressed={value.day === day} className={value.day === day ? "active" : ""} onClick={() => onDayChange(value.day)}>
       <span>{new Intl.DateTimeFormat("fr-FR", {timeZone: "UTC", weekday: "short"}).format(dayDate(value.day))}</span><strong>{dayDate(value.day).getUTCDate()}</strong>
     </button>)}</div>
     {loading ? <div className="calendar-loading" role="status"><LoaderCircle className="spin" size={26} /><strong>Vérification des agendas…</strong><span>Chargement des disponibilités de la semaine.</span></div> : <div className="calendar-booking-layout">
       <div className="calendar-scroll" ref={scrollRef} tabIndex={0} role="region" aria-label="Calendrier des disponibilités, défilement horizontal et vertical possible">
         <div className={`calendar-time-grid view-${view}`} style={{"--calendar-columns": displayedDays.length} as CSSProperties}>
           <div className="calendar-hours-head">Paris</div>
-          {displayedDays.map(value => <button key={`head-${value.day}`} type="button" disabled={value.day < minimumDay} className={`calendar-day-head ${value.day === day ? "active" : ""}`} aria-pressed={value.day === day} onClick={() => onDayChange(value.day)}>
+          {displayedDays.map(value => <button key={`head-${value.day}`} type="button" className={`calendar-day-head ${value.day === day ? "active" : ""}`} aria-pressed={value.day === day} onClick={() => onDayChange(value.day)}>
             <span>{new Intl.DateTimeFormat("fr-FR", {timeZone: "UTC", weekday: "short"}).format(dayDate(value.day))}</span><strong>{dayDate(value.day).getUTCDate()}</strong>
           </button>)}
           <div className="calendar-hours" style={{height: 13 * hourHeight}}>{hours.map(hour => <span key={hour} style={{top: (hour - 8) * hourHeight}}>{String(hour).padStart(2, "0")}:00</span>)}</div>

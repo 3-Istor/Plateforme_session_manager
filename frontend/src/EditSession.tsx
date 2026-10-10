@@ -83,7 +83,7 @@ export default function EditSession({ item, user, members, onClose, onSaved }: {
     const value = new Date(`${day}T12:00:00Z`);
     value.setUTCDate(value.getUTCDate() + direction * 7);
     const nextDay = value.toISOString().slice(0, 10);
-    setDay(nextDay < minimumDay ? minimumDay : nextDay);
+    setDay(nextDay);
   }
   function periodDuration(nextStart: string, nextEnd: string) {
     return nextStart && nextEnd ? (Date.parse(parisISO(nextEnd)) - Date.parse(parisISO(nextStart))) / 60000 : NaN;

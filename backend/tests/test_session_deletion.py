@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 
 import pytest
@@ -196,6 +197,49 @@ def test_reviewing_revision_excludes_original_and_proposal_reservations(backend_
     proposal = main.propose_modification(item.id, SessionCreate(**request_payload(14, 15)), db, user(MEMBER), settings)
     result = main.request_calendar(proposal.id, None, db, user(MANAGER), settings)
     assert all(not day.busy for day in result.days)
+
+
+@pytest.mark.parametrize("view", ["booking", "review", "edit"])
+@pytest.mark.parametrize("target_day", [date(2020, 3, 29), date(2020, 10, 25), date(2099, 5, 19), date(2099, 1, 1)])
+def test_calendar_navigation_queries_selected_week_without_moving_session(backend_context, monkeypatch, view, target_day):
+    db, settings = backend_context
+    item = create(db, settings)
+    original_start, original_end = item.start_at, item.end_at
+    zone = ZoneInfo("Europe/Paris")
+    busy_start = datetime.combine(target_day, time(12), tzinfo=zone)
+    busy_end = busy_start + timedelta(hours=1)
+    calls = []
+
+    def busy(db, settings, emails, start, end, exclude_id=None):
+        calls.append((emails, start, end, exclude_id))
+        return BusyPeriods(by_participant={MEMBER: [(busy_start, busy_end)]}, collective=[(busy_start, busy_end)])
+
+    monkeypatch.setattr(main, "combined_busy_periods", busy)
+    query = AvailabilityQuery(day=target_day, duration_minutes=15, participant_emails=[MANAGER, MEMBER])
+    if view == "booking":
+        result = main.calendar_availability(query, db, user(MEMBER), settings)
+    elif view == "review":
+        result = main.request_calendar(item.id, target_day, db, user(MANAGER), settings)
+    else:
+        result = main.modification_calendar(item.id, query, db, user(MEMBER), settings)
+
+    monday = target_day - timedelta(days=target_day.weekday())
+    assert [day.day for day in result.days] == [monday + timedelta(days=offset) for offset in range(7)]
+    assert len(calls) == 1
+    emails, start, end, exclude_id = calls[0]
+    assert emails == [MANAGER, MEMBER]
+    assert start == datetime.combine(monday, time(8), tzinfo=zone)
+    assert end == datetime.combine(monday + timedelta(days=6), time(21), tzinfo=zone)
+    assert exclude_id == (None if view == "booking" else item.id)
+    chosen = next(day for day in result.days if day.day == target_day)
+    assert len(chosen.busy) == 1
+    assert chosen.busy[0].busy_participant_emails == [MEMBER]
+    assert chosen.busy[0].collective_calendar_busy
+    if target_day.year == 2020:
+        assert all(not day.slots for day in result.days)
+    else:
+        assert chosen.slots
+    assert (item.start_at, item.end_at) == (original_start, original_end)
 
 
 def test_discord_worker_ignores_delivery_deleted_between_poll_and_fetch(backend_context):
