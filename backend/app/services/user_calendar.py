@@ -344,6 +344,21 @@ def update_manager_event(
     return event["id"]
 
 
+def delete_manager_event(db: Session, settings: Settings, *, event_id: str, manager_email: str) -> None:
+    """Cancel only this session's event in the configured existing calendar."""
+    calendar_id = settings.google_target_calendar_id.strip()
+    if not calendar_id:
+        raise ValueError("GOOGLE_TARGET_CALENDAR_ID est obligatoire")
+    credentials = _credentials(db, settings, manager_email, manager_events_scope(settings))
+    service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
+    try:
+        service.events().delete(calendarId=calendar_id, eventId=event_id, sendUpdates="all").execute()
+    except HttpError as exc:
+        # Already absent: allow a safe retry after a DB/network interruption.
+        if exc.resp.status not in {404, 410}:
+            raise
+
+
 def create_manager_event(
     db: Session,
     settings: Settings,

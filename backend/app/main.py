@@ -4,7 +4,7 @@ import logging
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from threading import Event, Lock, Thread
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -75,6 +75,7 @@ from .services.user_calendar import (
     authorization_url,
     connected_emails,
     create_manager_event,
+    delete_manager_event,
     exchange_code,
     freebusy_for_members,
     has_required_connection,
@@ -542,13 +543,18 @@ def calendar_availability(
     _: User = Depends(current_user),
     settings: Settings = Depends(get_settings),
 ):
+    return calendar_for_query(db, settings, query)
+
+
+def calendar_for_query(db: Session, settings: Settings, query: AvailabilityQuery, exclude_id=None):
     emails = validate_participants([str(email) for email in query.participant_emails], settings)
     first_day = query.day - timedelta(days=query.day.weekday())
     days = [first_day + timedelta(days=offset) for offset in range(7)]
     start, _ = working_window(days[0], query.timezone)
     _, end = working_window(days[-1], query.timezone)
     # One Google FreeBusy query per calendar for the whole week, not seven.
-    busy = combined_busy_periods(db, settings, emails, start, end)
+    busy = (combined_busy_periods(db, settings, emails, start, end, exclude_id=exclude_id)
+            if exclude_id is not None else combined_busy_periods(db, settings, emails, start, end))
 
     def serialize(slot):
         return ForcedSlot(start_at=slot.start_at, end_at=slot.end_at,
@@ -568,6 +574,28 @@ def calendar_availability(
     return CalendarAvailability(timezone=query.timezone, days=result)
 
 
+@app.get("/api/requests/{request_id}/calendar", response_model=CalendarAvailability)
+def request_calendar(
+    request_id: int,
+    day: date | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(manager_only),
+    settings: Settings = Depends(get_settings),
+):
+    item = db.get(SessionRequest, request_id)
+    if item is None:
+        raise HTTPException(404, "Demande introuvable")
+    query = AvailabilityQuery(
+        day=day or item.start_at.astimezone(ZoneInfo("Europe/Paris")).date(),
+        duration_minutes=int((item.end_at - item.start_at).total_seconds() / 60),
+        participant_emails=[p.email for p in item.participants],
+        timezone="Europe/Paris",
+    )
+    # Show the proposed position without counting its own database reservation
+    # as a conflict. For a modification, the original remains authoritative.
+    return calendar_for_query(db, settings, query, exclude_id=item.modifies_request_id or item.id)
+
+
 @app.get("/api/requests", response_model=list[SessionOut])
 def list_requests(
     scope: str = Query(default="mine", pattern="^(mine|all)$"),
@@ -579,17 +607,7 @@ def list_requests(
         if not user.is_manager:
             raise HTTPException(status_code=403, detail="Vue réservée au manager")
     else:
-        statement = statement.where(
-            or_(
-                SessionRequest.requester_email == str(user.email),
-                SessionRequest.participants.any(Participant.email == str(user.email)),
-                SessionRequest.id.in_(select(SessionRevision.request_id).where(
-                    SessionRevision.original_id.in_(select(SessionRequest.id).where(
-                        SessionRequest.requester_email == str(user.email)
-                    ))
-                )),
-            )
-        )
+        statement = statement.where(SessionRequest.requester_email == str(user.email))
     items = db.scalars(statement).unique().all()
     if user.is_manager:
         return items
@@ -677,6 +695,62 @@ def propose_modification(request_id: int, payload: SessionCreate, db: Session = 
                          user: User = Depends(current_user), settings: Settings = Depends(get_settings)):
     from .services.revisions import propose
     return propose(db, settings, user, request_id, payload)
+
+
+@app.post("/api/requests/{request_id}/availability", response_model=CalendarAvailability)
+def modification_calendar(request_id: int, query: AvailabilityQuery,
+                          db: Session = Depends(get_db), user: User = Depends(current_user),
+                          settings: Settings = Depends(get_settings)):
+    item = db.get(SessionRequest, request_id)
+    if item is None or item.revision:
+        raise HTTPException(404, "Session introuvable")
+    if not user.is_manager and item.requester_email != str(user.email):
+        raise HTTPException(403, "Seul l'auteur ou un manager peut modifier cette session")
+    return calendar_for_query(db, settings, query, exclude_id=item.id)
+
+
+@app.delete("/api/requests/{request_id}", status_code=204)
+def delete_request(
+    request_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+    settings: Settings = Depends(get_settings),
+):
+    with scheduling_lock:
+        item = db.get(SessionRequest, request_id)
+        if item is None:
+            raise HTTPException(404, "Session introuvable")
+        if not user.is_manager and item.requester_email != str(user.email):
+            raise HTTPException(403, "Seul l'auteur ou un manager peut supprimer cette session")
+        # A revision is only a proposal/history row, not a separate Google event.
+        if item.calendar_event_id and not item.revision and settings.auth_mode == "google":
+            manager_email = str(settings.manager_email).lower()
+            if not has_required_connection(db, settings, manager_email, True):
+                raise HTTPException(503, "Le manager doit reconnecter son agenda pour supprimer cette session")
+            try:
+                delete_manager_event(db, settings, event_id=item.calendar_event_id, manager_email=manager_email)
+            except Exception as exc:
+                raise HTTPException(502, "La suppression Google Calendar a échoué ; la session a été conservée") from exc
+
+        linked = [] if item.revision else list(db.scalars(select(SessionRequest).join(
+            SessionRevision, SessionRevision.request_id == SessionRequest.id
+        ).where(SessionRevision.original_id == item.id)).unique())
+        recipients = {item.requester_email, str(settings.manager_email), *(p.email for p in item.participants)}
+        for row in [*linked, item]:
+            delivery = db.get(DiscordDelivery, row.id)
+            if delivery:
+                db.delete(delivery)
+            for notification in db.scalars(select(Notification).where(Notification.request_id == row.id)):
+                db.delete(notification)
+            db.flush()
+            db.delete(row)
+            # Delete referencing revision rows before their original (Postgres FK).
+            db.flush()
+        for email in recipients:
+            db.add(Notification(recipient_email=email, title="Modification retirée" if item.revision else "Session supprimée",
+                                message=f"{user.name} a supprimé « {item.title} ».", request_id=None))
+        db.commit()
+    return Response(status_code=204)
 
 
 @app.patch("/api/requests/{request_id}/decision", response_model=SessionOut)

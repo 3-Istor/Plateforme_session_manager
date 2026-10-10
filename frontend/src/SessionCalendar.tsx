@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { AlertTriangle, CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight, Clock3, LoaderCircle, RefreshCw, ShieldCheck, Users } from "lucide-react";
 import type { CalendarDayAvailability, Member, Slot } from "./types";
 import "./session-calendar.css";
@@ -28,10 +28,12 @@ type Props = {
   onDurationChange: (duration: number) => void; onForceChange: (forced: boolean) => void;
   onSelect: (slot: Slot, day: string) => void; onRefresh: () => void;
   onBack: () => void; onContinue: () => void;
+  readOnly?: boolean; previewTitle?: string; previewDay?: string; reviewSummary?: ReactNode;
 };
 
 export default function SessionCalendar({ days, day, minimumDay, duration, members, forced, slot, loading,
-  onDayChange, onWeekChange, onDurationChange, onForceChange, onSelect, onRefresh, onBack, onContinue }: Props) {
+  onDayChange, onWeekChange, onDurationChange, onForceChange, onSelect, onRefresh, onBack, onContinue,
+  readOnly = false, previewTitle = "Votre session", previewDay, reviewSummary }: Props) {
   const [view, setView] = useState<"week" | "day">("week");
   const previewRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -64,9 +66,9 @@ export default function SessionCalendar({ days, day, minimumDay, duration, membe
     const viewport = scroller.getBoundingClientRect();
     if (bounds.left < viewport.left + 52) scroller.scrollLeft -= viewport.left + 52 - bounds.left;
     else if (bounds.right > viewport.right) scroller.scrollLeft += bounds.right - viewport.right;
-  }, [selectedKey, view]);
+  }, [selectedKey, view, loading, previewDay, days[0]?.day]);
 
-  return <section className={`session-calendar ${forced ? "is-forced" : ""}`} aria-busy={loading}>
+  return <section className={`session-calendar ${forced ? "is-forced" : ""} ${readOnly ? "calendar-review" : ""}`} aria-busy={loading}>
     <div className="session-calendar-heading">
       <span className="calendar-zone"><Clock3 size={14} /> Heure de Paris · 08:00–21:00</span>
     </div>
@@ -77,17 +79,17 @@ export default function SessionCalendar({ days, day, minimumDay, duration, membe
         <button type="button" aria-label="Semaine suivante" disabled={loading} onClick={() => onWeekChange(1)}><ChevronRight size={17} /></button>
       </div>
       <label className="calendar-date-picker" onClick={() => { if (loading) return; try { dateInputRef.current?.showPicker(); } catch { dateInputRef.current?.focus(); } }}><span className="sr-only">Choisir la date</span><CalendarDays size={15} /><span aria-hidden="true">{day.split("-").reverse().join("/")}</span><input ref={dateInputRef} aria-label="Choisir la date" type="date" lang="fr-FR" min={minimumDay} value={day} disabled={loading} onChange={event => { if (event.target.value >= minimumDay) onDayChange(event.target.value); }} /></label>
-      <label className="calendar-duration"><Clock3 size={15} /><select aria-label="Durée de la session" value={duration} disabled={loading} onChange={event => onDurationChange(Number(event.target.value))}>
+      {!readOnly && <label className="calendar-duration"><Clock3 size={15} /><select aria-label="Durée de la session" value={duration} disabled={loading} onChange={event => onDurationChange(Number(event.target.value))}>
         {durations.map(value => <option key={value} value={value}>{value} min</option>)}
-      </select></label>
+      </select></label>}
       <button className="calendar-refresh" type="button" aria-label="Actualiser les disponibilités" disabled={loading} onClick={onRefresh}><RefreshCw size={16} /></button>
       <div className="calendar-view-controls" aria-label="Vue du calendrier"><button type="button" aria-pressed={view === "week"} className={view === "week" ? "active" : ""} onClick={() => setView("week")}>Semaine</button><button type="button" aria-pressed={view === "day"} className={view === "day" ? "active" : ""} onClick={() => setView("day")}>Jour</button></div>
     </div>
     <div className="calendar-filter-row">
       <div className="calendar-members">{members.map(member => <span key={member.email} title={member.name}><i style={{background: member.color}} />{member.name}</span>)}</div>
-      <div className="calendar-mode-controls"><button type="button" aria-pressed={!forced} className={!forced ? "active" : ""} disabled={loading} onClick={() => onForceChange(false)}><ShieldCheck size={15} /> Créneaux libres</button><button type="button" aria-pressed={forced} className={forced ? "force active" : "force"} disabled={loading} onClick={() => onForceChange(true)}><AlertTriangle size={15} /> Forcer un créneau</button></div>
+      {!readOnly && <div className="calendar-mode-controls"><button type="button" aria-pressed={!forced} className={!forced ? "active" : ""} disabled={loading} onClick={() => onForceChange(false)}><ShieldCheck size={15} /> Créneaux libres</button><button type="button" aria-pressed={forced} className={forced ? "force active" : "force"} disabled={loading} onClick={() => onForceChange(true)}><AlertTriangle size={15} /> Forcer un créneau</button></div>}
     </div>
-    {forced && <p className="calendar-force-note"><AlertTriangle size={16} /> Les créneaux occupés deviennent sélectionnables. Le manager devra valider les conflits.</p>}
+    {forced && !readOnly && <p className="calendar-force-note"><AlertTriangle size={16} /> Les créneaux occupés deviennent sélectionnables. Le manager devra valider les conflits.</p>}
     <div className="calendar-mobile-days" aria-label="Jour à afficher">{days.map(value => <button key={value.day} type="button" disabled={loading || value.day < minimumDay} aria-pressed={value.day === day} className={value.day === day ? "active" : ""} onClick={() => onDayChange(value.day)}>
       <span>{new Intl.DateTimeFormat("fr-FR", {timeZone: "UTC", weekday: "short"}).format(dayDate(value.day))}</span><strong>{dayDate(value.day).getUTCDate()}</strong>
     </button>)}</div>
@@ -107,6 +109,7 @@ export default function SessionCalendar({ days, day, minimumDay, duration, membe
                 const candidate = starts.get(openingMinute + index * 15);
                 const conflict = candidate ? slotHasConflict(candidate) : false;
                 if (!candidate || !canChooseDay || (!forced && conflict)) return null;
+                if (readOnly) return !conflict ? <div key={candidate.start_at} className="calendar-time-choice free" style={{top: index * hourHeight / 4, height: hourHeight / 4}} aria-hidden="true" /> : null;
                 return <button type="button" key={candidate.start_at} style={{top: index * hourHeight / 4, height: hourHeight / 4}}
                   className={`calendar-time-choice ${conflict ? "conflict" : "free"}`}
                   aria-label={`Choisir ${dateLabel(value.day)}, ${time(candidate.start_at)}–${time(candidate.end_at)}${conflict ? `, ${busyLabel(candidate)}` : ", tout le monde est libre"}`}
@@ -122,14 +125,14 @@ export default function SessionCalendar({ days, day, minimumDay, duration, membe
                   <small>{time(busy.start_at)}–{time(busy.end_at)}</small><strong>{busyLabel(busy)}</strong>
                 </div>;
               })}
-              {slot && value.day === day && <div ref={previewRef} className={`calendar-session-preview ${selectedConflict ? "conflict" : ""} ${duration < 45 ? "short" : ""}`} style={position(slot)} title={`Votre session · ${time(slot.start_at)}–${time(slot.end_at)}`}>
-                <strong>Votre session</strong><span>{time(slot.start_at)}–{time(slot.end_at)}</span><small>{selectedConflict ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}{selectedConflict ? "Conflits à valider" : "Tout le monde est libre"}</small>
+              {slot && value.day === (previewDay || day) && <div ref={previewRef} className={`calendar-session-preview ${selectedConflict ? "conflict" : ""} ${duration < 45 ? "short" : ""}`} style={position(slot)} title={`${previewTitle} · ${time(slot.start_at)}–${time(slot.end_at)}`}>
+                <strong>{previewTitle}</strong><span>{time(slot.start_at)}–{time(slot.end_at)}</span><small>{selectedConflict ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}{readOnly ? "Position de la session" : selectedConflict ? "Conflits à valider" : "Tout le monde est libre"}</small>
               </div>}
             </div>;
           })}
         </div>
       </div>
-      <aside className="calendar-slot-panel">
+      {readOnly ? <aside className="calendar-slot-panel calendar-review-summary">{reviewSummary}</aside> : <aside className="calendar-slot-panel">
         <h3>{forced ? "Tous les créneaux" : "Créneaux libres"}</h3><p>{dateLabel(day)} · {duration} min</p>
         <div className="calendar-slot-options" role="group" aria-label="Créneaux proposés">
           {options.map(option => <button type="button" key={option.start_at} aria-pressed={slot?.start_at === option.start_at} className={`${slot?.start_at === option.start_at ? "selected" : ""} ${slotHasConflict(option) ? "conflict" : ""}`} onClick={() => onSelect(option, day)}>
@@ -139,12 +142,12 @@ export default function SessionCalendar({ days, day, minimumDay, duration, membe
         </div>
         <div className="calendar-selection-summary" aria-live="polite">
           <strong>Créneau sélectionné</strong>
-          {slot ? <div className={selectedConflict ? "has-conflict" : ""}><p><CalendarDays size={16} /><b>{time(slot.start_at)}–{time(slot.end_at)}</b></p><p><Users size={16} />{members.length} participants</p><p>{selectedConflict ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}{selectedConflict ? busyLabel(slot) : "Aucun conflit"}</p></div> : <p className="calendar-pick-hint">Cliquez sur un horaire libre dans le calendrier ou dans la liste.</p>}
+          {slot ? <div className={selectedConflict ? "has-conflict" : ""}><p><CalendarDays size={16} /><b>{time(slot.start_at)}–{time(slot.end_at)}</b></p><p className="selected-slot-date">{new Intl.DateTimeFormat("fr-FR", {timeZone: timezone, day: "numeric", month: "long"}).format(new Date(slot.start_at))}</p><p><Users size={16} />{members.length} participants</p><p>{selectedConflict ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}{selectedConflict ? busyLabel(slot) : "Aucun conflit"}</p></div> : <p className="calendar-pick-hint">Cliquez sur un horaire libre dans le calendrier ou dans la liste.</p>}
         </div>
         <button type="button" className={`btn ${selectedConflict ? "btn-force" : "btn-primary"} full`} disabled={!slot} onClick={onContinue}>{selectedConflict ? "Continuer malgré les conflits" : "Continuer"}<ChevronRight size={16} /></button>
-      </aside>
+      </aside>}
     </div>}
-    <div className="calendar-legend"><span><i className="busy" />Période occupée</span><span><i className="free" />Tout le monde disponible</span><span><i className="preview" />Votre session</span><p><ShieldCheck size={13} />Seules les périodes occupées sont affichées, jamais les détails des événements.</p></div>
-    <div className="calendar-bottom"><button type="button" className="btn btn-ghost" disabled={loading} onClick={onBack}><ChevronLeft size={15} />Modifier l’équipe ou la durée personnalisée</button></div>
+    <div className="calendar-legend"><span><i className="busy" />Période occupée</span><span><i className="free" />Tout le monde disponible</span><span><i className="preview" />{readOnly ? "Session examinée" : "Votre session"}</span><p><ShieldCheck size={13} />Seules les périodes occupées sont affichées, jamais les détails des événements.</p></div>
+    {!readOnly && <div className="calendar-bottom"><button type="button" className="btn btn-ghost" disabled={loading} onClick={onBack}><ChevronLeft size={15} />Modifier l’équipe ou la durée personnalisée</button></div>}
   </section>;
 }

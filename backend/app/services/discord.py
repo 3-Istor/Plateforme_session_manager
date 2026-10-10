@@ -63,6 +63,8 @@ def message_payload(db, item, settings):
 
 
 def sync_delivery(db, delivery, settings):
+    if delivery is None:
+        return
     url = settings.discord_webhook_url.get_secret_value()
     if not url:
         return

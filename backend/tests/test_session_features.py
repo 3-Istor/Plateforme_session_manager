@@ -302,7 +302,7 @@ def test_forced_request_is_persisted_and_demo_approval_never_calls_google(
     assert body.busy_participant_emails == [MEMBER]
 
     member_view = main.list_requests("mine", db, user(MEMBER))
-    manager_view = main.list_requests("mine", db, user(MANAGER))
+    manager_view = main.list_requests("all", db, user(MANAGER))
     assert member_view[0].is_forced is True
     assert member_view[0].busy_participant_emails == []
     assert manager_view[0].busy_participant_emails == [MEMBER]

@@ -75,6 +75,14 @@ export const api = {
       body: JSON.stringify({day, duration_minutes: durationMinutes, participant_emails: participantEmails, timezone: SCHEDULE_TIMEZONE}),
     }),
   requests: (scope: "mine" | "all") => request<SessionRequest[]>(`/api/requests?scope=${scope}`),
+  deleteRequest: (id: number) => request<void>(`/api/requests/${id}`, { method: "DELETE" }),
+  requestCalendar: (id: number, day: string, signal?: AbortSignal) =>
+    request<CalendarAvailability>(`/api/requests/${id}/calendar?day=${encodeURIComponent(day)}`, { signal }),
+  modificationCalendar: (id: number, day: string, durationMinutes: number, participantEmails: string[], signal?: AbortSignal) =>
+    request<CalendarAvailability>(`/api/requests/${id}/availability`, {
+      method: "POST", signal,
+      body: JSON.stringify({day, duration_minutes: durationMinutes, participant_emails: participantEmails, timezone: SCHEDULE_TIMEZONE}),
+    }),
   notifications: () => request<Notification[]>("/api/notifications"),
   calendarStatus: () => request<CalendarStatus>("/api/google/calendar/status"),
   calendarConnect: () => request<{ authorization_url: string }>("/api/google/calendar/connect"),

@@ -101,7 +101,8 @@ def test_week_blocks_when_google_cannot_read_availability(backend_context, monke
 
 
 @pytest.mark.parametrize("failure", [None, "missing", "denied"])
-def test_delegates_calendar_blocks_new_week_view_and_reservation(backend_context, monkeypatch, failure):
+@pytest.mark.parametrize("view", ["new", "review", "edit"])
+def test_delegates_calendar_blocks_new_week_view_and_reservation(backend_context, monkeypatch, failure, view):
     from fastapi import BackgroundTasks
     from backend.app.models import CalendarConnection
     from backend.app.schemas import SessionCreate
@@ -110,6 +111,8 @@ def test_delegates_calendar_blocks_new_week_view_and_reservation(backend_context
     from backend.tests.test_session_features import request_payload
 
     db, settings = backend_context
+    original = main.create_request(SessionCreate(**{**request_payload(8, 9), "participant_emails": [MEMBER]}),
+                                   BackgroundTasks(), db, user(MEMBER), settings) if view != "new" else None
     settings.auth_mode = "google"
     settings.google_availability_calendar_ids = ""
     for email in [MANAGER, MEMBER]:
@@ -144,13 +147,19 @@ def test_delegates_calendar_blocks_new_week_view_and_reservation(backend_context
     monkeypatch.setattr(user_calendar, "_credentials", lambda db, config, email, scope: email)
     monkeypatch.setattr(user_calendar, "build", lambda *args, credentials, **kwargs: GoogleFreeBusy(credentials))
     query = AvailabilityQuery(day="2099-05-12", duration_minutes=60, participant_emails=[MEMBER])
+    def read_week():
+        if view == "review":
+            return main.request_calendar(original.id, query.day, db, user(MANAGER), settings)
+        if view == "edit":
+            return main.modification_calendar(original.id, query, db, user(MEMBER), settings)
+        return main.calendar_availability(query, db, user(MEMBER), settings)
     if failure:
         with pytest.raises(HTTPException) as error:
-            main.calendar_availability(query, db, user(MEMBER), settings)
+            read_week()
         assert error.value.status_code == 502
         return
 
-    week = main.calendar_availability(query, db, user(MEMBER), settings)
+    week = read_week()
     assert calls == [(MEMBER, ["primary"]), (MANAGER, [settings.google_target_calendar_id, "deleguessigl@gmail.com"])]
     day = next(d for d in week.days if d.day == query.day)
     assert len(day.busy) == 1

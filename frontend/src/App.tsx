@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, Bell, CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight,
   Clock3, Inbox, LayoutDashboard, ListFilter, LoaderCircle, LogOut, Menu, Plus, Save,
-  ShieldCheck, Sparkles, Trophy, Users, Video, X, XCircle,
+  ShieldCheck, Sparkles, Trash2, Trophy, Users, Video, X, XCircle,
 } from "lucide-react";
 import ProfilePage from "./ProfilePage";
 import EditSession from "./EditSession";
+import RequestCalendar from "./RequestCalendar";
+import DeleteSessionDialog from "./DeleteSessionDialog";
 import DurationPicker, { validDuration } from "./DurationPicker";
 import SessionCalendar, { slotHasConflict } from "./SessionCalendar";
 import { ApiError, SCHEDULE_TIMEZONE, api, getDemoUser, setDemoUser } from "./api";
@@ -70,10 +72,12 @@ function GoogleLogin({ config, onLogin }: { config: AppConfig; onLogin: () => Pr
   </div></div>;
 }
 
-function RequestCard({ item, members, manager, onDecision, onEdit }: {
+function RequestCard({ item, members, manager, onDecision, onEdit, onDelete, onCalendar }: {
   item: SessionRequest; members: Member[]; manager: boolean;
   onDecision: (item: SessionRequest, decision: "approved" | "declined") => void;
   onEdit?: (item: SessionRequest) => void;
+  onDelete?: (item: SessionRequest) => void;
+  onCalendar?: (item: SessionRequest) => void;
 }) {
   const participants = item.participants.map(({ email }) => members.find((member) => member.email === email)).filter(Boolean) as Member[];
   const busyNames = (item.busy_participant_emails || []).map((email) => members.find((member) => member.email === email)?.name || email);
@@ -86,6 +90,8 @@ function RequestCard({ item, members, manager, onDecision, onEdit }: {
       {item.previous_session && <details><summary>Comparer avec la session précédente</summary><p><strong>Avant :</strong> {item.previous_session.title} · {formatDateTime(item.previous_session.start_at)}–{formatTime(item.previous_session.end_at)}</p><p>{item.previous_session.session_type} · {item.previous_session.agenda}</p><p>Participants : {item.previous_session.participants.map(email => members.find(m => m.email === email)?.name || email).join(", ")}</p><p><strong>Après :</strong> {item.title} · {formatDateTime(item.start_at)}–{formatTime(item.end_at)}</p><p>{item.session_type} · {item.agenda}</p><p>Participants : {participants.map(p => p.name).join(", ")}</p></details>}
       <p className="agenda-preview">{item.agenda}</p><div className="card-footer"><div className="avatar-stack">{participants.slice(0, 5).map((member) => <Avatar key={member.email} member={member} size="sm" />)}</div>
       {onEdit && !item.modifies_request_id && new Date(item.start_at) > new Date() && <button className="btn btn-ghost" onClick={() => onEdit(item)}>Modifier la session</button>}
+      {manager && onCalendar && <button className="btn btn-ghost" onClick={() => onCalendar(item)}><CalendarDays size={15} />Voir dans le calendrier</button>}
+      {onDelete && <button className="btn btn-ghost danger" onClick={() => onDelete(item)}><Trash2 size={15} />{item.modifies_request_id ? "Retirer la modification" : "Supprimer"}</button>}
       {manager && item.status === "pending" && <div className="decision-actions"><button className="btn btn-ghost danger" onClick={() => onDecision(item, "declined")}><X size={16} /> Refuser</button><button className="btn btn-dark small" onClick={() => onDecision(item, "approved")}><Check size={16} /> Accepter</button></div>}{item.manager_note && <span className="manager-note">Note : {item.manager_note}</span>}</div>
     </div>
   </article>;
@@ -200,9 +206,10 @@ function NewSession({ members, user, calendarConnected, connectedEmails, demoMod
   </section>;
 }
 
-function Dashboard({ user, members, requests, onNew, onViewAll, onDecision }: {
+function Dashboard({ user, members, requests, onNew, onViewAll, onDecision, onCalendar }: {
   user: User; members: Member[]; requests: SessionRequest[]; onNew: () => void; onViewAll: () => void;
   onDecision: (item: SessionRequest, decision: "approved" | "declined") => void;
+  onCalendar: (item: SessionRequest) => void;
 }) {
   const now = new Date();
   const [scheduleYear, scheduleMonth] = scheduleDate(now).split("-").map(Number);
@@ -221,7 +228,7 @@ function Dashboard({ user, members, requests, onNew, onViewAll, onDecision }: {
   return <section><div className="hero"><div><span className="eyebrow">{today}</span><h1>Bonjour {user.first_name || user.name.split(" ")[0]} <span>👋</span></h1><p>{user.is_manager && pending.length ? `${pending.length} demande${pending.length > 1 ? "s" : ""} attend${pending.length > 1 ? "ent" : ""} votre validation.` : "Prêt à organiser une nouvelle session de travail ?"}</p></div><button className="btn btn-light" onClick={onNew}><Plus size={18} /> Nouvelle session</button><div className="hero-orb one" /><div className="hero-orb two" /></div>
     <div className="stats-grid"><div className="stat-card"><span className="stat-icon indigo"><CalendarDays /></span><div className="stat-copy"><strong>{quarterRequests.length}</strong><span>Sessions ce trimestre</span></div><small>T{quarter} {scheduleYear}</small></div><div className="stat-card"><span className="stat-icon amber"><Clock3 /></span><div className="stat-copy"><strong>{pending.length}</strong><span>En attente</span></div><small>{user.is_manager ? "À traiter" : "En cours"}</small></div><div className="stat-card"><span className="stat-icon green"><CheckCircle2 /></span><div className="stat-copy"><strong>{upcoming.length}</strong><span>Sessions à venir</span></div><small>{plannedHours} h planifiée{hours > 1 ? "s" : ""}</small></div></div>
     <div className="section-title"><div><h2>{user.is_manager ? "Demandes à traiter" : "Mes prochaines sessions"}</h2><p>{user.is_manager ? "Les demandes qui attendent votre décision" : "Vos sessions et demandes à venir"}</p></div><button className="text-button" onClick={onViewAll}>Tout voir <ChevronRight size={16} /></button></div>
-    <div className="request-list">{displayed.slice(0, 3).map((item) => <RequestCard key={item.id} item={item} members={members} manager={user.is_manager} onDecision={onDecision} />)}{displayed.length === 0 && <div className="empty-state"><Inbox size={32} /><h3>{user.is_manager ? "Aucune demande à traiter" : "Aucune session à venir"}</h3><p>{user.is_manager ? "Les nouvelles demandes apparaîtront ici." : "Votre prochaine session apparaîtra ici."}</p><button className="btn btn-primary" onClick={onNew}>Créer une session</button></div>}</div>
+    <div className="request-list">{displayed.slice(0, 3).map((item) => <RequestCard key={item.id} item={item} members={members} manager={user.is_manager} onDecision={onDecision} onCalendar={onCalendar} />)}{displayed.length === 0 && <div className="empty-state"><Inbox size={32} /><h3>{user.is_manager ? "Aucune demande à traiter" : "Aucune session à venir"}</h3><p>{user.is_manager ? "Les nouvelles demandes apparaîtront ici." : "Votre prochaine session apparaîtra ici."}</p><button className="btn btn-primary" onClick={onNew}>Créer une session</button></div>}</div>
   </section>;
 }
 
@@ -264,6 +271,10 @@ export default function App() {
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
   const [view, setView] = useState<View>("dashboard");
   const [editing, setEditing] = useState<SessionRequest | null>(null);
+  const [reviewId, setReviewId] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState<SessionRequest | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [mobileMenu, setMobileMenu] = useState(false);
@@ -339,7 +350,21 @@ export default function App() {
     };
   }, [user?.email, user?.is_manager]);
 
-  const navigate = (next: View) => { setEditing(null); setView(next); setMobileMenu(false); setNotificationsOpen(false); };
+  const navigate = (next: View) => { setEditing(null); setReviewId(null); setView(next); setMobileMenu(false); setNotificationsOpen(false); };
+  const openCalendar = (item: SessionRequest) => { navigate("requests"); setReviewId(item.id); };
+  const openDelete = (item: SessionRequest) => { setDeleteError(""); setDeleting(item); };
+  const handleDelete = async () => {
+    if (!deleting || deleteLoading) return;
+    setDeleteLoading(true); setDeleteError("");
+    try {
+      await api.deleteRequest(deleting.id);
+      liveRefreshRef.current += 1;
+      setRequests(current => current.filter(item => item.id !== deleting.id && item.modifies_request_id !== deleting.id));
+      setDeleting(null); setEditing(null); setReviewId(null);
+      await loadData();
+    } catch (err) { setDeleteError((err as Error).message); }
+    finally { setDeleteLoading(false); }
+  };
   const changeDemoUser = async (email: string) => { setDemoUser(email); navigate("dashboard"); await loadData(); };
   const logout = async () => { try { await api.logout(); } finally { window.google?.accounts.id.disableAutoSelect(); setUser(null); window.location.reload(); } };
   const connectCalendar = async () => { setError(""); try { const { authorization_url } = await api.calendarConnect(); window.location.assign(authorization_url); } catch (err) { setError((err as Error).message); } };
@@ -381,6 +406,8 @@ export default function App() {
   if (config.auth_mode === "google" && !user) return <GoogleLogin config={config} onLogin={loadData} />;
   if (!user) return <div className="app-loader"><div className="error-card"><XCircle /><h2>Connexion impossible</h2><p>{error}</p><button className="btn btn-primary" onClick={() => void loadData()}>Réessayer</button></div></div>;
   const calendarReady = config.auth_mode === "demo" || Boolean(calendar?.connected && (!user.is_manager || calendar.can_create_events));
+  const visibleRequests = user.is_manager ? requests : requests.filter(item => item.requester_email === user.email);
+  const reviewed = user.is_manager ? requests.find(item => item.id === reviewId) : undefined;
   const unreadCount = notifications.filter((item) => !item.read_at).length;
   const viewTitle = view === "profile" ? "Mon profil" : view === "dashboard" ? "Vue d'ensemble" : view === "new" ? "Nouvelle session" : view === "lateness" ? "Nombre de retards" : user.is_manager ? "Demandes" : "Mes sessions";
 
@@ -390,13 +417,15 @@ export default function App() {
     <main><header className="topbar"><button className="mobile-menu" aria-label="Ouvrir le menu" aria-expanded={mobileMenu} onClick={() => setMobileMenu(!mobileMenu)}><Menu /></button><div className="breadcrumb">Espace équipe <ChevronRight size={14} /> <strong>{viewTitle}</strong></div><div className="topbar-actions"><span className={`sync-pill ${calendarReady ? "connected" : ""}`}><span />{config.auth_mode === "demo" ? "Mode démonstration" : calendarReady ? "Google Calendar synchronisé" : "Agenda à connecter"}</span><div className="notifications" ref={notificationsRef}><button className="notification-button" aria-label={`${unreadCount} notification${unreadCount > 1 ? "s" : ""} non lue${unreadCount > 1 ? "s" : ""}`} aria-expanded={notificationsOpen} onClick={() => setNotificationsOpen((open) => !open)}><Bell size={18} />{unreadCount > 0 && <b>{unreadCount > 9 ? "9+" : unreadCount}</b>}</button>{notificationsOpen && <div className="notifications-panel"><div className="notifications-head"><div><strong>Notifications</strong><span>{unreadCount ? `${unreadCount} non lue${unreadCount > 1 ? "s" : ""}` : "Vous êtes à jour"}</span></div>{unreadCount > 0 && <button onClick={() => void markAllRead()}>Tout marquer comme lu</button>}</div><div className="notifications-list">{notifications.map((notification) => <button key={notification.id} className={notification.read_at ? "read" : "unread"} onClick={() => { void markNotificationRead(notification); if (notification.request_id) navigate("requests"); }}><span className="notification-dot" /><span><strong>{notification.title}</strong><p>{notification.message}</p><small>{formatDateTime(notification.created_at)}</small></span></button>)}{!notifications.length && <div className="notifications-empty"><Bell size={23} /><span>Aucune notification</span></div>}</div></div>}</div></div></header><div className="content">
       {error && <div className="alert-error" role="alert"><XCircle size={18} />{error}<button aria-label="Fermer" onClick={() => setError("")}><X size={16} /></button></div>}
       {!calendarReady && view !== "lateness" && <div className="calendar-connect-banner"><span className="icon-box"><CalendarDays size={20} /></span><div><strong>Connectez votre Google Calendar</strong><p>{user.is_manager ? "Nous lirons uniquement vos périodes occupées et vous autoriserez la création des sessions validées." : "La plateforme verra uniquement si vous êtes libre ou occupé, jamais le détail de vos événements."}</p></div><button className="btn btn-primary" onClick={() => void connectCalendar()}>Connecter mon agenda</button></div>}
-      {view === "dashboard" && <Dashboard user={user} members={members} requests={requests} onNew={() => navigate("new")} onViewAll={() => navigate("requests")} onDecision={openDecision} />}
+      {view === "dashboard" && <Dashboard user={user} members={members} requests={visibleRequests} onNew={() => navigate("new")} onViewAll={() => navigate("requests")} onDecision={openDecision} onCalendar={openCalendar} />}
       {view === "new" && <NewSession members={members} user={user} calendarConnected={calendarReady} connectedEmails={config.auth_mode === "demo" ? [] : calendar?.connected_emails || []} demoMode={config.auth_mode === "demo"} onCreated={addCreatedRequest} onCancel={() => { navigate("dashboard"); void loadData(); }} />}
-      {view === "requests" && !editing && <section><div className="page-title"><div><span className="eyebrow">{user.is_manager ? "ESPACE MANAGER" : "MON PLANNING"}</span><h1>{user.is_manager ? "Demandes de l'équipe" : "Mes sessions"}</h1><p>{user.is_manager ? "Validez les sessions et gardez la maîtrise du planning." : "Retrouvez vos demandes et leur état."}</p></div><button className="btn btn-primary" onClick={() => navigate("new")}><Plus size={18} /> Nouvelle session</button></div><div className="request-list">{requests.map((item) => <RequestCard key={item.id} item={item} members={members} manager={user.is_manager} onDecision={openDecision} onEdit={user.is_manager || item.requester_email === user.email ? setEditing : undefined} />)}{!requests.length && <div className="empty-state"><Inbox size={32} /><h3>Aucune session</h3><p>Les demandes apparaîtront ici.</p></div>}</div></section>}
+      {view === "requests" && !editing && !reviewed && <section><div className="page-title"><div><span className="eyebrow">{user.is_manager ? "ESPACE MANAGER" : "MON PLANNING"}</span><h1>{user.is_manager ? "Demandes de l'équipe" : "Mes sessions"}</h1><p>{user.is_manager ? "Validez les sessions et gardez la maîtrise du planning." : "Retrouvez uniquement les sessions que vous avez demandées."}</p></div><button className="btn btn-primary" onClick={() => navigate("new")}><Plus size={18} /> Nouvelle session</button></div><div className="request-list">{visibleRequests.map((item) => <RequestCard key={item.id} item={item} members={members} manager={user.is_manager} onDecision={openDecision} onEdit={user.is_manager || item.requester_email === user.email ? setEditing : undefined} onDelete={user.is_manager || item.requester_email === user.email ? openDelete : undefined} onCalendar={openCalendar} />)}{!visibleRequests.length && <div className="empty-state"><Inbox size={32} /><h3>Aucune session</h3><p>Vos demandes apparaîtront ici.</p></div>}</div></section>}
+      {view === "requests" && reviewed && !editing && <RequestCalendar key={reviewed.id} item={reviewed} members={members} onClose={() => setReviewId(null)} onDecision={openDecision} />}
       {view === "requests" && editing && <EditSession key={editing.id} item={editing} user={user} members={members} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void loadData(); }} />}
       {view === "profile" && <ProfilePage key={user.email} user={user} onSaved={loadData} />}
       {view === "lateness" && <LatenessPage entries={lateness} members={members} manager={user.is_manager} onSave={saveLateness} />}
     </div></main>
+    {deleting && <DeleteSessionDialog item={deleting} loading={deleteLoading} error={deleteError} onClose={() => { if (!deleteLoading) setDeleting(null); }} onConfirm={() => void handleDelete()} />}
     {decision && <div className="modal-backdrop" onMouseDown={() => !decisionLoading && closeDecision()}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="decision-title" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" aria-label="Fermer" disabled={decisionLoading} onClick={closeDecision}><X /></button><span className={`decision-icon ${decision.value}`}>{decision.value === "approved" ? <CheckCircle2 /> : <XCircle />}</span><h2 id="decision-title">{decision.item.modifies_request_id ? (decision.value === "approved" ? "Accepter cette modification ?" : "Refuser cette modification ?") : (decision.value === "approved" ? "Accepter cette session ?" : "Refuser cette session ?")}</h2><p>« {decision.item.title} » · {formatDate(decision.item.start_at, true)} à {formatTime(decision.item.start_at)}</p>{decision.item.is_forced && <div className="decision-force-warning"><AlertTriangle size={17} /><span>Cette demande utilise un créneau forcé{decision.item.busy_participant_emails?.length ? ` malgré l'indisponibilité de ${decision.item.busy_participant_emails.map((email) => members.find((member) => member.email === email)?.name || email).join(", ")}` : ""}{decision.item.collective_calendar_busy ? `${decision.item.busy_participant_emails?.length ? "; l" : " malgré l"}'agenda collectif est occupé` : ""}.</span></div>}<label className="field-label" htmlFor="manager-note">Note au demandeur (facultatif)</label><textarea id="manager-note" className="input textarea small-area" disabled={decisionLoading} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ajoutez un commentaire…" /><div className="modal-actions"><button className="btn btn-ghost" disabled={decisionLoading} onClick={closeDecision}>Annuler</button><button className={`btn ${decision.value === "approved" ? "btn-primary" : "btn-danger"}`} disabled={decisionLoading} onClick={() => void handleDecision()}>{decisionLoading && <LoaderCircle className="spin" size={16} />} Confirmer</button></div></div></div>}
   </div>;
 }

@@ -46,7 +46,8 @@ def test_only_author_or_manager_can_modify_and_only_one_pending(backend_context)
     with pytest.raises(HTTPException) as duplicate:
         main.propose_modification(item.id, payload(), db, user(MEMBER), settings)
     assert duplicate.value.status_code == 409
-    assert change.id in [r.id for r in main.list_requests("mine", db, user(MEMBER))]
+    assert change.id not in [r.id for r in main.list_requests("mine", db, user(MEMBER))]
+    assert item.id in [r.id for r in main.list_requests("mine", db, user(MEMBER))]
 
 
 def test_accept_changes_original_without_duplicate_busy_periods(backend_context):
