@@ -199,6 +199,16 @@ class ManagedCalendar(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
+class SelectedCalendar(Base):
+    """Member-selected secondary calendars; primary is always checked separately."""
+
+    __tablename__ = "selected_calendars"
+
+    email: Mapped[str] = mapped_column(ForeignKey("calendar_connections.email", ondelete="CASCADE"), primary_key=True)
+    calendar_id: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+
+
 class LatenessRecord(Base):
     __tablename__ = "lateness_records"
     __table_args__ = (CheckConstraint("points >= 0", name="ck_lateness_points_non_negative"),)

@@ -1,4 +1,4 @@
-import type { AppConfig, CalendarAvailability, CalendarStatus, LatenessEntry, Member, Notification, SessionRequest, Slot, User } from "./types";
+import type { AppConfig, CalendarAvailability, CalendarSelection, CalendarStatus, LatenessEntry, Member, Notification, SessionRequest, Slot, User } from "./types";
 
 export const SCHEDULE_TIMEZONE = "Europe/Paris";
 
@@ -85,7 +85,11 @@ export const api = {
     }),
   notifications: () => request<Notification[]>("/api/notifications"),
   calendarStatus: () => request<CalendarStatus>("/api/google/calendar/status"),
-  calendarConnect: () => request<{ authorization_url: string }>("/api/google/calendar/connect"),
+  calendarConnect: (manageCalendars = false) => request<{ authorization_url: string }>(`/api/google/calendar/connect${manageCalendars ? "?manage_calendars=true" : ""}`),
+  calendarSelection: (signal?: AbortSignal) => request<CalendarSelection>("/api/google/calendar/selection", { signal }),
+  saveCalendarSelection: (calendar_ids: string[]) => request<void>("/api/google/calendar/selection", {
+    method: "PATCH", body: JSON.stringify({calendar_ids}),
+  }),
   calendarDisconnect: () => request<void>("/api/google/calendar/disconnect", { method: "POST" }),
   availability: (day: string, durationMinutes: number, participantEmails: string[], signal?: AbortSignal) =>
     request<Slot[]>("/api/availability", {

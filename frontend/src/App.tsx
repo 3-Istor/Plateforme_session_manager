@@ -5,6 +5,7 @@ import {
   ShieldCheck, Sparkles, Trash2, Trophy, Users, Video, X, XCircle,
 } from "lucide-react";
 import ProfilePage from "./ProfilePage";
+import CalendarSettings from "./CalendarSettings";
 import EditSession from "./EditSession";
 import RequestCalendar from "./RequestCalendar";
 import DeleteSessionDialog from "./DeleteSessionDialog";
@@ -23,7 +24,7 @@ declare global {
   }
 }
 
-type View = "dashboard" | "new" | "requests" | "lateness" | "profile";
+type View = "dashboard" | "new" | "requests" | "lateness" | "profile" | "calendars";
 const SESSION_TYPES = ["Team building", "Session de travail", "Rétro", "Dry run", "Soutenance", "Autre"] as const;
 const scheduleDate = (date: Date) => {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone: SCHEDULE_TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
@@ -270,7 +271,7 @@ export default function App() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [lateness, setLateness] = useState<LatenessEntry[]>([]);
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
-  const [view, setView] = useState<View>("dashboard");
+  const [view, setView] = useState<View>(() => new URLSearchParams(window.location.search).get("manage_calendars") === "1" ? "calendars" : "dashboard");
   const [editing, setEditing] = useState<SessionRequest | null>(null);
   const [reviewId, setReviewId] = useState<number | null>(null);
   const [deleting, setDeleting] = useState<SessionRequest | null>(null);
@@ -414,7 +415,7 @@ export default function App() {
   const visibleRequests = user.is_manager ? requests : requests.filter(item => item.requester_email === user.email);
   const reviewed = user.is_manager ? requests.find(item => item.id === reviewId) : undefined;
   const unreadCount = notifications.filter((item) => !item.read_at).length;
-  const viewTitle = view === "profile" ? "Mon profil" : view === "dashboard" ? "Vue d'ensemble" : view === "new" ? "Nouvelle session" : view === "lateness" ? "Nombre de retards" : user.is_manager ? "Demandes" : "Mes sessions";
+  const viewTitle = view === "calendars" ? "Mes agendas" : view === "profile" ? "Mon profil" : view === "dashboard" ? "Vue d'ensemble" : view === "new" ? "Nouvelle session" : view === "lateness" ? "Nombre de retards" : user.is_manager ? "Demandes" : "Mes sessions";
 
   return <div className="app-shell">
     <aside className={`sidebar ${mobileMenu ? "open" : ""}`}><div className="brand"><img className="brand-logo brand-logo-sidebar" src="/3istor-logo.png" alt="Logo 3istor SIGL" /><div><strong>3istor</strong><span>Sessions</span></div></div><nav><button className={view === "dashboard" ? "active" : ""} onClick={() => navigate("dashboard")}><LayoutDashboard /> Tableau de bord</button><button className={view === "new" ? "active" : ""} onClick={() => navigate("new")}><Plus /> Nouvelle session</button><button className={view === "requests" ? "active" : ""} onClick={() => navigate("requests")}><Inbox /> {user.is_manager ? "Demandes" : "Mes sessions"}{user.is_manager && requests.some((item) => item.status === "pending") && <b>{requests.filter((item) => item.status === "pending").length}</b>}</button><button className={view === "lateness" ? "active" : ""} onClick={() => navigate("lateness")}><Trophy /> Nombre de retards</button><button className={view === "profile" ? "active" : ""} onClick={() => navigate("profile")}><Users /> Mon profil</button></nav><div className="sidebar-bottom"><div className="secure-card"><ShieldCheck /><strong>Planning sécurisé</strong><span>Vos agendas restent privés. Seules les disponibilités sont lues.</span></div><div className="profile"><span className="avatar" style={{ background: "#4f46e5" }}>{user.name.slice(0, 2).toUpperCase()}</span><div><strong>{user.name}</strong><small>{user.is_manager ? "Manager" : "Membre"}</small></div>{config.auth_mode === "google" && <button className="logout-button" onClick={() => void logout()} title="Se déconnecter"><LogOut size={17} /></button>}</div>{config.auth_mode === "demo" && <select className="demo-select" value={getDemoUser() || user.email} onChange={(event) => void changeDemoUser(event.target.value)} aria-label="Identité de démonstration">{members.map((member) => <option key={member.email} value={member.email}>Voir comme {member.name}</option>)}</select>}</div></aside>
@@ -427,7 +428,8 @@ export default function App() {
       {view === "requests" && !editing && !reviewed && <section><div className="page-title"><div><span className="eyebrow">{user.is_manager ? "ESPACE MANAGER" : "MON PLANNING"}</span><h1>{user.is_manager ? "Demandes de l'équipe" : "Mes sessions"}</h1><p>{user.is_manager ? "Validez les sessions et gardez la maîtrise du planning." : "Retrouvez uniquement les sessions que vous avez demandées."}</p></div><button className="btn btn-primary" onClick={() => navigate("new")}><Plus size={18} /> Nouvelle session</button></div><div className="request-list">{visibleRequests.map((item) => <RequestCard key={item.id} item={item} members={members} manager={user.is_manager} onDecision={reviewDecision} onEdit={user.is_manager || item.requester_email === user.email ? setEditing : undefined} onDelete={user.is_manager || item.requester_email === user.email ? openDelete : undefined} onCalendar={openCalendar} />)}{!visibleRequests.length && <div className="empty-state"><Inbox size={32} /><h3>Aucune session</h3><p>Vos demandes apparaîtront ici.</p></div>}</div></section>}
       {view === "requests" && reviewed && !editing && <RequestCalendar key={reviewed.id} item={reviewed} members={members} onClose={() => setReviewId(null)} onDecision={openDecision} />}
       {view === "requests" && editing && <EditSession key={editing.id} item={editing} user={user} members={members} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void loadData(); }} />}
-      {view === "profile" && <ProfilePage key={user.email} user={user} onSaved={loadData} />}
+      {view === "profile" && <ProfilePage key={user.email} user={user} onSaved={loadData} onCalendars={() => navigate("calendars")} />}
+      {view === "calendars" && <CalendarSettings key={user.email} demo={config.auth_mode === "demo"} onBack={() => navigate("profile")} onSaved={loadData} />}
       {view === "lateness" && <LatenessPage entries={lateness} members={members} manager={user.is_manager} onSave={saveLateness} />}
     </div></main>
     {deleting && <DeleteSessionDialog item={deleting} loading={deleteLoading} error={deleteError} onClose={() => { if (!deleteLoading) setDeleting(null); }} onConfirm={() => void handleDelete()} />}

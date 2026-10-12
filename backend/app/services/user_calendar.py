@@ -21,10 +21,19 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..models import CalendarConnection, ManagedCalendar
+from ..models import CalendarConnection, ManagedCalendar, SelectedCalendar
 from .availability import BusyPeriods
 
 FREEBUSY_SCOPE = "https://www.googleapis.com/auth/calendar.freebusy"
+CALENDAR_LIST_SCOPE = "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+ACCESSIBLE_FREEBUSY_SCOPE = "https://www.googleapis.com/auth/calendar.events.freebusy"
+SELECTION_SCOPES = {CALENDAR_LIST_SCOPE, ACCESSIBLE_FREEBUSY_SCOPE}
+
+
+class CalendarAuthorizationRequired(ValueError):
+    pass
+
+
 # Kept for compatibility with connections made by older releases. New manager
 # connections use SHARED_EVENTS_SCOPE for the configured existing team calendar.
 EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.app.created"
@@ -52,8 +61,9 @@ def required_scopes(is_manager: bool, events_scope: str = SHARED_EVENTS_SCOPE) -
     return scopes
 
 
-def authorization_scopes(settings: Settings, is_manager: bool) -> list[str]:
-    return [*IDENTITY_SCOPES, *required_scopes(is_manager, manager_events_scope(settings))]
+def authorization_scopes(settings: Settings, is_manager: bool, manage_calendars: bool = False) -> list[str]:
+    return [*IDENTITY_SCOPES, *required_scopes(is_manager, manager_events_scope(settings)),
+            *sorted(SELECTION_SCOPES if manage_calendars else [])]
 
 
 def _client_config(settings: Settings) -> dict:
@@ -92,10 +102,10 @@ def _b64decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
 
 
-def create_oauth_state(settings: Settings, email: str, is_manager: bool) -> str:
+def create_oauth_state(settings: Settings, email: str, is_manager: bool, manage_calendars: bool = False) -> str:
     payload = _b64encode(
         json.dumps(
-            {"email": email.lower(), "manager": is_manager, "exp": int(time.time()) + STATE_TTL_SECONDS,
+            {"email": email.lower(), "manager": is_manager, "manage_calendars": manage_calendars, "exp": int(time.time()) + STATE_TTL_SECONDS,
              "nonce": secrets.token_urlsafe(32)},
             separators=(",", ":"),
         ).encode()
@@ -129,14 +139,14 @@ def _pkce_verifier(settings: Settings, state: str) -> str:
     ).digest())
 
 
-def authorization_url(settings: Settings, email: str, is_manager: bool) -> str:
+def authorization_url(settings: Settings, email: str, is_manager: bool, manage_calendars: bool = False) -> str:
     if not settings.google_client_id or not settings.google_client_secret:
         raise ValueError("GOOGLE_CLIENT_ID et GOOGLE_CLIENT_SECRET sont obligatoires")
     if is_manager and not settings.google_target_calendar_id.strip():
         raise ValueError("GOOGLE_TARGET_CALENDAR_ID est obligatoire pour le manager")
-    state = create_oauth_state(settings, email, is_manager)
+    state = create_oauth_state(settings, email, is_manager, manage_calendars)
     flow = Flow.from_client_config(
-        _client_config(settings), scopes=authorization_scopes(settings, is_manager), state=state,
+        _client_config(settings), scopes=authorization_scopes(settings, is_manager, manage_calendars), state=state,
         code_verifier=_pkce_verifier(settings, state), autogenerate_code_verifier=False,
     )
     flow.redirect_uri = settings.google_redirect_uri
@@ -158,8 +168,9 @@ def exchange_code(
     state_data = verify_oauth_state(settings, state)
     email = str(state_data["email"]).lower()
     is_manager = bool(state_data["manager"])
+    manage_calendars = bool(state_data.get("manage_calendars", False))
     flow = Flow.from_client_config(
-        _client_config(settings), scopes=authorization_scopes(settings, is_manager), state=state,
+        _client_config(settings), scopes=authorization_scopes(settings, is_manager, manage_calendars), state=state,
         code_verifier=_pkce_verifier(settings, state), autogenerate_code_verifier=False,
     )
     flow.redirect_uri = settings.google_redirect_uri
@@ -170,6 +181,8 @@ def exchange_code(
         raw_granted_scopes.split() if isinstance(raw_granted_scopes, str) else raw_granted_scopes
     )
     missing_calendar_scopes = set(required_scopes(is_manager, manager_events_scope(settings))) - granted_scopes
+    if manage_calendars:
+        missing_calendar_scopes |= SELECTION_SCOPES - granted_scopes
     if missing_calendar_scopes:
         raise ValueError(
             "Permissions Calendar manquantes : " + ", ".join(sorted(missing_calendar_scopes))
@@ -257,6 +270,86 @@ def connected_emails(db: Session) -> list[str]:
     return list(db.scalars(select(CalendarConnection.email).order_by(CalendarConnection.email)).all())
 
 
+def selected_calendars(db: Session | None, email: str) -> list[SelectedCalendar]:
+    if db is None:
+        return []
+    return list(db.scalars(select(SelectedCalendar).where(SelectedCalendar.email == email.lower())
+                           .order_by(SelectedCalendar.calendar_id)))
+
+
+def has_selection_permissions(db: Session, email: str) -> bool:
+    return SELECTION_SCOPES.issubset(connection_scopes(db.get(CalendarConnection, email.lower())))
+
+
+def available_calendars(db: Session, settings: Settings, email: str) -> dict[str, dict]:
+    if not has_selection_permissions(db, email):
+        raise CalendarAuthorizationRequired("Autorisez Google à lister vos agendas et consulter leurs disponibilités.")
+    credentials = _credentials(db, settings, email, CALENDAR_LIST_SCOPE)
+    service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
+    calendars = {"primary": {"id": "primary", "name": "Agenda principal", "primary": True}}
+    token = None
+    seen = set()
+    while True:
+        result = service.calendarList().list(
+            maxResults=250, minAccessRole="freeBusyReader", showHidden=True, showDeleted=False,
+            fields="nextPageToken,items(id,summary,primary,deleted)", **({"pageToken": token} if token else {}),
+        ).execute()
+        if not isinstance(result.get("items"), list):
+            raise ValueError("Google n'a pas renvoyé la liste complète de vos agendas")
+        for item in result["items"]:
+            if item.get("deleted") or not item.get("id"):
+                continue
+            primary = bool(item.get("primary"))
+            calendar_id = "primary" if primary else item["id"]
+            if not primary and calendar_id in settings.availability_calendar_ids:
+                continue  # Mandatory collective calendars are checked separately.
+            calendars[calendar_id] = {"id": calendar_id, "name": str(item.get("summary") or item["id"])[:255], "primary": primary}
+        token = result.get("nextPageToken")
+        if not token:
+            return calendars
+        if token in seen or len(seen) >= 100:
+            raise ValueError("Impossible de charger tous les agendas Google")
+        seen.add(token)
+
+
+def calendar_selection(db: Session, settings: Settings, email: str) -> dict:
+    rows = selected_calendars(db, email)
+    selected = {row.calendar_id for row in rows}
+    connected = FREEBUSY_SCOPE in connection_scopes(db.get(CalendarConnection, email.lower()))
+    permitted = connected and has_selection_permissions(db, email)
+    choices = available_calendars(db, settings, email) if permitted else {
+        "primary": {"id": "primary", "name": "Agenda principal", "primary": True},
+    }
+    options = [{**value, "selected": value["primary"] or key in selected, "available": True}
+               for key, value in choices.items()]
+    options.extend({"id": row.calendar_id, "name": row.name, "primary": False, "selected": True, "available": False}
+                   for row in rows if row.calendar_id not in choices)
+    return {"connected": connected, "authorization_required": not permitted, "calendars": options}
+
+
+def save_calendar_selection(db: Session, settings: Settings, email: str, calendar_ids: list[str]) -> None:
+    email = email.lower()
+    if db.get(CalendarConnection, email) is None:
+        raise CalendarAuthorizationRequired("Connectez vos agendas Google avant de modifier la sélection.")
+    chosen = set(calendar_ids) - {"primary", email}
+    if len(chosen) > 49:
+        raise ValueError("Choisissez au maximum 49 agendas supplémentaires")
+    if chosen & set(settings.availability_calendar_ids):
+        raise ValueError("Les agendas collectifs sont toujours vérifiés et ne peuvent pas être modifiés ici")
+    current = {row.calendar_id: row.name for row in selected_calendars(db, email)}
+    if chosen.issubset(current):
+        names = current  # Removing an inaccessible calendar never requires new consent.
+    else:
+        choices = available_calendars(db, settings, email)
+        if not chosen.issubset(choices):
+            raise ValueError("Un agenda sélectionné n'est pas accessible depuis votre compte Google")
+        names = {key: value["name"] for key, value in choices.items()}
+    db.execute(delete(SelectedCalendar).where(SelectedCalendar.email == email))
+    for calendar_id in sorted(chosen):
+        db.add(SelectedCalendar(email=email, calendar_id=calendar_id, name=names[calendar_id]))
+    db.commit()
+
+
 def _credentials(db: Session, settings: Settings, email: str, required_scope: str) -> Credentials:
     connection = db.get(CalendarConnection, email.lower())
     if not connection or required_scope not in connection_scopes(connection):
@@ -282,23 +375,25 @@ def freebusy_for_members(
 ) -> BusyPeriods:
     periods = BusyPeriods(by_participant={email.lower(): [] for email in emails})
     for email in emails:
-        credentials = _credentials(db, settings, email, FREEBUSY_SCOPE)
+        extras = selected_calendars(db, email)
+        credentials = _credentials(db, settings, email, ACCESSIBLE_FREEBUSY_SCOPE if extras else FREEBUSY_SCOPE)
         service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
         response = service.freebusy().query(
             body={
                 "timeMin": start_at.isoformat(),
                 "timeMax": end_at.isoformat(),
-                "items": [{"id": "primary"}],
+                "items": [{"id": calendar_id} for calendar_id in ["primary", *(row.calendar_id for row in extras)]],
             }
         ).execute()
         calendars = response.get("calendars", {})
-        primary = calendars.get("primary", {})
-        if primary.get("errors") or not isinstance(primary.get("busy"), list):
-            raise ValueError(f"Impossible de lire les disponibilités de l'agenda de {email}")
-        for busy in primary.get("busy", []):
-            periods.by_participant[email.lower()].append(
-                (datetime.fromisoformat(busy["start"]), datetime.fromisoformat(busy["end"]))
-            )
+        for calendar_id in ["primary", *(row.calendar_id for row in extras)]:
+            calendar = calendars.get(calendar_id, {})
+            if calendar.get("errors") or not isinstance(calendar.get("busy"), list):
+                raise ValueError(f"Impossible de lire un agenda sélectionné de {email}. Vérifiez la sélection ou reconnectez Google.")
+            for busy in calendar["busy"]:
+                periods.by_participant[email.lower()].append(
+                    (datetime.fromisoformat(busy["start"]), datetime.fromisoformat(busy["end"]))
+                )
 
     availability_calendar_ids = settings.availability_calendar_ids
     if availability_calendar_ids:

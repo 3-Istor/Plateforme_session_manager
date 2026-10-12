@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 import type { User } from "./types";
 
-export default function ProfilePage({ user, onSaved }: { user: User; onSaved: () => Promise<void> }) {
+export default function ProfilePage({ user, onSaved, onCalendars }: { user: User; onSaved: () => Promise<void>; onCalendars: () => void }) {
   const [first, setFirst] = useState(user.first_name || "");
   const [last, setLast] = useState(user.last_name || "");
   const [requestManager, setRequestManager] = useState(false);
@@ -39,6 +39,7 @@ export default function ProfilePage({ user, onSaved }: { user: User; onSaved: ()
       {!user.is_manager && (user.manager_status === "pending" ? <p>Demande de rôle manager en attente de validation.</p> : <p><label><input type="checkbox" checked={requestManager} onChange={e => setRequestManager(e.target.checked)} /> Demander le rôle manager (validation requise)</label>{user.manager_status === "declined" && <span> Votre précédente demande a été refusée.</span>}</p>)}
       <button className="btn btn-primary" disabled={busy || !first.trim() || !last.trim()}>Enregistrer</button>
     </form>
+    <div className="panel profile-calendars"><h2>Mes agendas Google</h2><p>Ajoutez ou retirez les agendas utilisés pour vérifier vos disponibilités, par exemple votre agenda « Entretien ».</p><button className="btn btn-primary" onClick={onCalendars}>Gérer mes agendas</button></div>
     {user.is_manager && <div className="panel"><h2>Demandes de rôle manager</h2>{requests.length === 0 && <p>Aucune demande en attente.</p>}{requests.map(person => <div key={person.email}><p><strong>{person.name}</strong> · {person.email}</p><button className="btn btn-primary" disabled={busy} onClick={() => void decide(person.email, true)}>Valider</button><button className="btn btn-ghost" disabled={busy} onClick={() => void decide(person.email, false)}>Refuser</button></div>)}</div>}
   </section>;
 }

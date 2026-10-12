@@ -73,3 +73,6 @@ export type CalendarStatus = {
   can_create_events: boolean;
   connected_emails: string[];
 };
+
+export type CalendarOption = { id: string; name: string; primary: boolean; selected: boolean; available: boolean };
+export type CalendarSelection = { connected: boolean; authorization_required: boolean; calendars: CalendarOption[] };

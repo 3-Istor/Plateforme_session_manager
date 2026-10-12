@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
+from google.auth.exceptions import RefreshError
+from googleapiclient.errors import HttpError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -30,6 +32,7 @@ from .metrics import MetricsMiddleware
 from .database import Base, engine, get_db, SessionLocal
 from .models import (
     CalendarConnection,
+    SelectedCalendar,
     ForcedBusyParticipant,
     ForcedSession,
     LatenessRecord,
@@ -47,6 +50,8 @@ from .schemas import (
     CalendarDayAvailability,
     AuthorizationUrl,
     CalendarStatus,
+    CalendarSelectionIn,
+    CalendarSelectionOut,
     DecisionIn,
     ForcedSlot,
     GoogleCredentialIn,
@@ -80,6 +85,11 @@ from .services.user_calendar import (
     freebusy_for_members,
     has_required_connection,
     verify_oauth_state,
+    CalendarAuthorizationRequired,
+    calendar_selection,
+    has_selection_permissions,
+    save_calendar_selection,
+    selected_calendars,
 )
 
 Base.metadata.create_all(bind=engine)
@@ -416,6 +426,7 @@ def decide_role(email: str, payload: RoleDecision, db: Session = Depends(get_db)
 def calendar_status(
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
+    settings: Settings = Depends(get_settings),
 ):
     return CalendarStatus(
         connected=has_required_connection(db, settings, str(user.email), False),
@@ -428,12 +439,46 @@ def calendar_status(
 def connect_calendar(
     user: User = Depends(current_user),
     settings: Settings = Depends(get_settings),
+    db: Session = Depends(get_db),
+    manage_calendars: bool = False,
 ):
     try:
-        url = authorization_url(settings, str(user.email), str(user.email) == str(settings.manager_email).lower())
+        url = authorization_url(settings, str(user.email), str(user.email) == str(settings.manager_email).lower(),
+                                manage_calendars=manage_calendars or has_selection_permissions(db, str(user.email))
+                                or bool(selected_calendars(db, str(user.email))))
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return AuthorizationUrl(authorization_url=url)
+
+
+def calendar_selection_error(exc: Exception, invalid_selection: bool = False):
+    if isinstance(exc, (CalendarAuthorizationRequired, RefreshError)) or (
+        isinstance(exc, HttpError) and exc.resp.status in {401, 403}
+    ):
+        return HTTPException(428, "Une autorisation Google est nécessaire pour gérer vos agendas. Reconnectez Google.")
+    if invalid_selection and isinstance(exc, ValueError):
+        return HTTPException(422, str(exc))
+    return HTTPException(502, "Impossible de charger vos agendas Google. Réessayez dans un instant.")
+
+
+@app.get("/api/google/calendar/selection", response_model=CalendarSelectionOut)
+def get_calendar_selection(db: Session = Depends(get_db), user: User = Depends(current_user),
+                           settings: Settings = Depends(get_settings)):
+    try:
+        return calendar_selection(db, settings, str(user.email))
+    except Exception as exc:
+        raise calendar_selection_error(exc) from exc
+
+
+@app.patch("/api/google/calendar/selection", status_code=204)
+def update_calendar_selection(payload: CalendarSelectionIn, db: Session = Depends(get_db),
+                              user: User = Depends(current_user), settings: Settings = Depends(get_settings)):
+    try:
+        with scheduling_lock:
+            save_calendar_selection(db, settings, str(user.email), payload.calendar_ids)
+    except Exception as exc:
+        db.rollback()
+        raise calendar_selection_error(exc, invalid_selection=True) from exc
 
 
 @app.get("/api/google/calendar/callback", include_in_schema=False)
@@ -445,8 +490,16 @@ def calendar_callback(
     settings: Settings = Depends(get_settings),
 ):
     frontend = settings.frontend_url.rstrip("/")
+    state_data = {}
     if error or not code or not state:
-        return RedirectResponse(f"{frontend}?{urlencode({'calendar_error': 'Autorisation Google annulée'})}")
+        params = {"calendar_error": "Autorisation Google annulée"}
+        if state:
+            try:
+                if verify_oauth_state(settings, state).get("manage_calendars"):
+                    params["manage_calendars"] = "1"
+            except ValueError:
+                pass
+        return RedirectResponse(f"{frontend}?{urlencode(params)}")
     try:
         state_data = verify_oauth_state(settings, state)
         email = str(state_data["email"]).lower()
@@ -462,10 +515,14 @@ def calendar_callback(
             if settings.app_env != "production"
             else "Connexion Calendar impossible. Vérifiez la configuration Google."
         )
-        return RedirectResponse(
-            f"{frontend}?{urlencode({'calendar_error': message})}"
-        )
-    return RedirectResponse(f"{frontend}?calendar=connected")
+        params = {"calendar_error": message}
+        if state_data.get("manage_calendars"):
+            params["manage_calendars"] = "1"
+        return RedirectResponse(f"{frontend}?{urlencode(params)}")
+    params = {"calendar": "connected"}
+    if state_data.get("manage_calendars"):
+        params["manage_calendars"] = "1"
+    return RedirectResponse(f"{frontend}?{urlencode(params)}")
 
 
 @app.post("/api/google/calendar/disconnect", status_code=204)
@@ -475,6 +532,7 @@ def disconnect_calendar(
 ):
     connection = db.get(CalendarConnection, str(user.email))
     if connection:
+        db.query(SelectedCalendar).filter(SelectedCalendar.email == str(user.email).lower()).delete(synchronize_session=False)
         db.delete(connection)
         db.commit()
 

@@ -80,6 +80,33 @@ class CalendarAvailability(BaseModel):
     days: list[CalendarDayAvailability]
 
 
+class CalendarOption(BaseModel):
+    id: str
+    name: str
+    primary: bool = False
+    selected: bool = False
+    available: bool = True
+
+
+class CalendarSelectionOut(BaseModel):
+    connected: bool
+    authorization_required: bool
+    calendars: list[CalendarOption]
+
+
+class CalendarSelectionIn(BaseModel):
+    calendar_ids: list[str] = Field(max_length=50)
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("calendar_ids")
+    @classmethod
+    def validate_calendar_ids(cls, values):
+        normalized = list(dict.fromkeys(value.strip() for value in values))
+        if any(not value or len(value) > 1024 or any(ord(char) < 32 for char in value) for value in normalized):
+            raise ValueError("Identifiant d'agenda invalide")
+        return normalized
+
+
 class SessionCreate(BaseModel):
     title: str = Field(min_length=3, max_length=160)
     project_name: str = Field(default="", max_length=80)
