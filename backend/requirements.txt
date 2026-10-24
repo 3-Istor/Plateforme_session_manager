@@ -1,6 +1,6 @@
 fastapi==0.141.1
 uvicorn[standard]==0.52.4
-sqlalchemy==2.0.52
+sqlalchemy==2.1.6
 pydantic-settings==2.16.1
 email-validator==2.3.0
 google-auth==2.58.0
