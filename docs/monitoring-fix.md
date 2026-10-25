@@ -18,7 +18,8 @@ Vault, des volumes, de Helm ou de PostgreSQL n'est requise pour ce correctif.
 ## Problème PostgreSQL séparé
 
 Les logs fournis montrent `invalid length of startup packet` environ deux fois
-par minute. Le client SQLAlchemy utilise psycopg2 pour PostgreSQL ; aucune
+par minute. Le client SQLAlchemy utilise psycopg ou psycopg2 pour PostgreSQL
+selon l'URL et la version de SQLAlchemy ; aucune
 collecte HTTP vers PostgreSQL n'est implémentée par le site. La source exacte
 de ces connexions n'est pas visible dans les extraits.
 

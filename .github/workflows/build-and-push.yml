@@ -17,6 +17,20 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sessions_test
+          POSTGRES_PASSWORD: sessions_test
+          POSTGRES_DB: sessions_driver_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sessions_test -d sessions_driver_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -39,6 +53,12 @@ jobs:
           AUTH_MODE: demo
           DATABASE_URL: "sqlite://"
         run: pytest backend/tests
+
+      - name: Smoke test PostgreSQL application startup
+        env:
+          # Credentials for the disposable CI service above, never production.
+          TEST_POSTGRES_URL: "postgresql://sessions_test:sessions_test@127.0.0.1:5432/sessions_driver_test"
+        run: pytest backend/tests/test_database_drivers.py -q
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
